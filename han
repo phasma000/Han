@@ -1,0 +1,1467 @@
+--[[
+===============================================================
+              HANAMI REBUILD V3 — FIXED BY NONO
+===============================================================
+    Vertical sidebar nav, list-style rows, split preview
+    panel docked right, matches reference screenshots.
+===============================================================
+]]
+
+local Players   = game:GetService("Players")
+local UIS       = game:GetService("UserInputService")
+local TS        = game:GetService("TweenService")
+local RS        = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
+local LP     = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+local GuiParent
+pcall(function()
+    if typeof(gethui) == "function" then GuiParent = gethui() end
+end)
+if not GuiParent then GuiParent = game:GetService("CoreGui") end
+pcall(function()
+    local old = GuiParent:FindFirstChild("HanamiV3")
+    if old then old:Destroy() end
+end)
+
+local Touch    = UIS.TouchEnabled
+local Keyboard = UIS.KeyboardEnabled
+local IsMobile = Touch and not Keyboard
+
+-- ============================================================
+-- THEME
+-- ============================================================
+local Theme = {
+    Accent      = Color3.fromRGB(232, 121, 160),
+    AccentDark  = Color3.fromRGB(175, 80, 120),
+    AccentPurp  = Color3.fromRGB(110, 75, 185),
+    Bg          = Color3.fromRGB(10, 8, 16),
+    Panel       = Color3.fromRGB(14, 11, 20),
+    Sidebar     = Color3.fromRGB(11, 9, 18),
+    Card        = Color3.fromRGB(20, 16, 28),
+    Card2       = Color3.fromRGB(26, 21, 36),
+    Card3       = Color3.fromRGB(32, 26, 44),
+    Border      = Color3.fromRGB(44, 36, 58),
+    BorderPink  = Color3.fromRGB(180, 80, 130),
+    Text        = Color3.fromRGB(240, 235, 245),
+    Sub         = Color3.fromRGB(130, 120, 145),
+    Dim         = Color3.fromRGB(72, 64, 88),
+    White       = Color3.fromRGB(255, 255, 255),
+    Green       = Color3.fromRGB(60, 210, 120),
+    Red         = Color3.fromRGB(220, 70, 90),
+    Preview     = Color3.fromRGB(7, 6, 14),
+}
+
+local Themes = {
+    Hanami  = { a = Color3.fromRGB(232,121,160), d = Color3.fromRGB(175,80,120)  },
+    Purple  = { a = Color3.fromRGB(148,90,238),  d = Color3.fromRGB(98,56,172)   },
+    Crimson = { a = Color3.fromRGB(222,68,94),   d = Color3.fromRGB(148,42,66)   },
+    Cyan    = { a = Color3.fromRGB(58,183,218),  d = Color3.fromRGB(44,108,148)  },
+    Emerald = { a = Color3.fromRGB(58,198,132),  d = Color3.fromRGB(36,128,90)   },
+}
+
+local AimPalette = {
+    Color3.fromRGB(210,88,98),
+    Color3.fromRGB(226,128,162),
+    Color3.fromRGB(202,176,65),
+    Color3.fromRGB(84,192,118),
+    Color3.fromRGB(64,176,200),
+    Color3.fromRGB(232,232,236),
+    Color3.fromRGB(188,184,194),
+    Color3.fromRGB(212,120,174),
+}
+
+-- ============================================================
+-- STATE
+-- ============================================================
+local S = {
+    Page             = "Home",
+    MenuOpen         = true,
+    AimHeld          = false,
+    AimAssist        = false,
+    SilentAim        = false,
+    TeamCheck        = true,
+    AliveCheck       = true,
+    WallCheck        = false,
+    HoldKeyOnly      = true,
+    FOV              = 120,
+    Smoothness       = 0.18,
+    Distance         = 1000,
+    TargetPart       = "Head",
+    ESP              = false,
+    Names            = true,
+    DistanceESP      = true,
+    HealthESP        = false,
+    Tracers          = false,
+    BoxStyle         = "Box",
+    ESPDistance      = 1500,
+    EnemiesOnly      = false,
+    CrossColor       = Color3.fromRGB(232,121,160),
+    CrossCentreDot   = true,
+    CrossThickness   = 1,
+    CrossGap         = 4,
+    ShowFOV          = true,
+    AimColor         = Color3.fromRGB(232,121,160),
+    HitboxSize       = 8,
+    HitboxPart       = "HumanoidRootPart",
+    FriendsList      = {},
+}
+
+-- ============================================================
+-- HELPERS
+-- ============================================================
+local function New(cls, props, parent)
+    local obj = Instance.new(cls)
+    for k, v in pairs(props or {}) do pcall(function() obj[k] = v end) end
+    obj.Parent = parent
+    return obj
+end
+
+local function Corner(p, r)
+    return New("UICorner", { CornerRadius = UDim.new(0, r or 6) }, p)
+end
+
+local function Stroke(p, col, thick, trans)
+    return New("UIStroke", {
+        Color        = col   or Theme.Border,
+        Thickness    = thick or 1,
+        Transparency = trans or 0,
+    }, p)
+end
+
+local function Tw(obj, props, dur, sty, dir)
+    return TS:Create(obj, TweenInfo.new(
+        dur or 0.18,
+        sty or Enum.EasingStyle.Quart,
+        dir or Enum.EasingDirection.Out
+    ), props)
+end
+
+local function Lbl(parent, text, size, color, font, xa)
+    return New("TextLabel", {
+        BackgroundTransparency = 1,
+        Text           = text  or "",
+        TextColor3     = color or Theme.Text,
+        TextSize       = size  or 11,
+        Font           = font  or Enum.Font.Gotham,
+        TextXAlignment = xa    or Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Center,
+        TextWrapped    = true,
+    }, parent)
+end
+
+local function Btn(parent, props)
+    local b = New("TextButton", props, parent)
+    return b
+end
+
+-- ============================================================
+-- SCREEN
+-- ============================================================
+local Screen = New("ScreenGui", {
+    Name           = "HanamiV3",
+    ResetOnSpawn   = false,
+    IgnoreGuiInset = true,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    DisplayOrder   = 999999,
+}, GuiParent)
+
+-- ============================================================
+-- MAIN WINDOW  (sidebar | content | preview)
+-- ============================================================
+local WIN_W = IsMobile and (Camera.ViewportSize.X - 20) or 760
+local WIN_H = IsMobile and math.clamp(Camera.ViewportSize.Y - 60, 400, 560) or 520
+local SIDE_W  = 58
+local PREV_W  = 220
+local TOP_H   = 48
+
+local Main = New("Frame", {
+    BackgroundColor3 = Theme.Panel,
+    BorderSizePixel  = 0,
+    Size             = UDim2.fromOffset(WIN_W, WIN_H),
+    Position         = UDim2.fromScale(0.5, 0.5),
+    AnchorPoint      = Vector2.new(0.5, 0.5),
+    ClipsDescendants = true,
+}, Screen)
+Corner(Main, 12)
+Stroke(Main, Theme.BorderPink, 1, 0.35)
+
+-- ============================================================
+-- TOP BAR  (drag + title + search + controls)
+-- ============================================================
+local TopBar = New("Frame", {
+    BackgroundColor3 = Theme.Panel,
+    BorderSizePixel  = 0,
+    Size             = UDim2.new(1, 0, 0, TOP_H),
+}, Main)
+
+-- bottom border line
+New("Frame", {
+    BackgroundColor3 = Theme.Border,
+    BorderSizePixel  = 0,
+    Size             = UDim2.new(1, 0, 0, 1),
+    Position         = UDim2.new(0, 0, 1, -1),
+}, TopBar)
+
+-- Page title label (updates on nav)
+local TitleLbl = Lbl(TopBar, "Home", 14, Theme.Text, Enum.Font.GothamBold)
+TitleLbl.Size     = UDim2.fromOffset(120, TOP_H)
+TitleLbl.Position = UDim2.fromOffset(SIDE_W + 10, 0)
+
+local SubTitleLbl = Lbl(TopBar, "your session at a glance", 9, Theme.Sub)
+SubTitleLbl.Size     = UDim2.fromOffset(220, TOP_H)
+SubTitleLbl.Position = UDim2.fromOffset(SIDE_W + 104, 0)
+
+-- Search pill
+local SearchBox = New("Frame", {
+    BackgroundColor3 = Theme.Card,
+    BorderSizePixel  = 0,
+    Size             = UDim2.fromOffset(160, 28),
+    Position         = UDim2.new(1, -(160 + 80), 0.5, -14),
+}, TopBar)
+Corner(SearchBox, 8)
+Stroke(SearchBox, Theme.Border)
+local SIco = Lbl(SearchBox, "🔍", 10, Theme.Sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
+SIco.Size     = UDim2.fromOffset(24, 28)
+local STxt = Lbl(SearchBox, "Search settings", 8, Theme.Sub)
+STxt.Position = UDim2.fromOffset(24, 0)
+STxt.Size     = UDim2.new(1, -28, 1, 0)
+
+-- Min / Close
+local MinBtn = New("TextButton", {
+    BackgroundColor3 = Theme.Card2,
+    BorderSizePixel  = 0,
+    Text = "—", TextColor3 = Theme.Sub,
+    TextSize = 11, Font = Enum.Font.GothamBold,
+    Size = UDim2.fromOffset(26, 26),
+    Position = UDim2.new(1, -58, 0.5, -13),
+    AutoButtonColor = false, ZIndex = 6,
+}, TopBar)
+Corner(MinBtn, 6)
+
+local CloseBtn = New("TextButton", {
+    BackgroundColor3 = Theme.Card2,
+    BorderSizePixel  = 0,
+    Text = "×", TextColor3 = Theme.Sub,
+    TextSize = 16, Font = Enum.Font.GothamMedium,
+    Size = UDim2.fromOffset(26, 26),
+    Position = UDim2.new(1, -28, 0.5, -13),
+    AutoButtonColor = false, ZIndex = 6,
+}, TopBar)
+Corner(CloseBtn, 6)
+
+-- ============================================================
+-- SIDEBAR  (icons + avatars)
+-- ============================================================
+local Sidebar = New("Frame", {
+    BackgroundColor3 = Theme.Sidebar,
+    BorderSizePixel  = 0,
+    Size             = UDim2.new(0, SIDE_W, 1, -TOP_H),
+    Position         = UDim2.fromOffset(0, TOP_H),
+}, Main)
+
+-- vertical separator
+New("Frame", {
+    BackgroundColor3 = Theme.Border,
+    BorderSizePixel  = 0,
+    Size             = UDim2.new(0, 1, 1, 0),
+    Position         = UDim2.new(1, 0, 0, 0),
+}, Sidebar)
+
+-- Top avatar
+local SideAvTop = New("ImageLabel", {
+    BackgroundColor3 = Theme.Card3,
+    BorderSizePixel  = 0,
+    Size             = UDim2.fromOffset(34, 34),
+    Position         = UDim2.fromOffset(12, 10),
+    Image            = "",
+}, Sidebar)
+Corner(SideAvTop, 8)
+pcall(function()
+    SideAvTop.Image = Players:GetUserThumbnailAsync(
+        LP.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+end)
+
+-- Nav icons container
+local NavList = New("Frame", {
+    BackgroundTransparency = 1,
+    Size   = UDim2.new(1, 0, 1, -120),
+    Position = UDim2.fromOffset(0, 58),
+}, Sidebar)
+New("UIListLayout", {
+    FillDirection    = Enum.FillDirection.Vertical,
+    Padding          = UDim.new(0, 4),
+    SortOrder        = Enum.SortOrder.LayoutOrder,
+    HorizontalAlignment = Enum.HorizontalAlignment.Center,
+}, NavList)
+New("UIPadding", { PaddingTop = UDim.new(0,6) }, NavList)
+
+-- Bottom avatar
+local SideAvBot = New("ImageLabel", {
+    BackgroundColor3    = Theme.AccentPurp,
+    BackgroundTransparency = 0.3,
+    BorderSizePixel     = 0,
+    Size                = UDim2.fromOffset(32, 32),
+    Position            = UDim2.new(0.5, -16, 1, -44),
+    Image               = "",
+}, Sidebar)
+Corner(SideAvBot, 16)
+pcall(function()
+    SideAvBot.Image = Players:GetUserThumbnailAsync(
+        LP.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+end)
+
+-- Discord icon bottom
+local DiscSideBtn = New("TextButton", {
+    BackgroundColor3 = Color3.fromRGB(88, 68, 174),
+    BorderSizePixel  = 0,
+    Text = "◉", TextColor3 = Theme.White, TextSize = 14,
+    Font = Enum.Font.GothamBold,
+    Size = UDim2.fromOffset(36, 36),
+    Position = UDim2.new(0.5, -18, 1, -86),
+    AutoButtonColor = false,
+}, Sidebar)
+Corner(DiscSideBtn, 10)
+
+-- ============================================================
+-- CONTENT AREA
+-- ============================================================
+local ContentArea = New("Frame", {
+    BackgroundTransparency = 1,
+    Size     = UDim2.new(1, -(SIDE_W + PREV_W), 1, -TOP_H),
+    Position = UDim2.fromOffset(SIDE_W, TOP_H),
+    ClipsDescendants = true,
+}, Main)
+
+-- ============================================================
+-- PREVIEW PANEL  (right side, vertical)
+-- ============================================================
+local PrevPanel = New("Frame", {
+    BackgroundColor3 = Theme.Card,
+    BorderSizePixel  = 0,
+    Size             = UDim2.new(0, PREV_W, 1, -TOP_H),
+    Position         = UDim2.new(1, -PREV_W, 0, TOP_H),
+}, Main)
+
+-- left border
+New("Frame", {
+    BackgroundColor3 = Theme.Border,
+    BorderSizePixel  = 0,
+    Size             = UDim2.new(0, 1, 1, 0),
+}, PrevPanel)
+
+local PrevTitle = Lbl(PrevPanel, "FOV PREVIEW", 8, Theme.Sub, Enum.Font.GothamBold)
+PrevTitle.Size     = UDim2.new(1, -12, 0, 14)
+PrevTitle.Position = UDim2.fromOffset(8, 8)
+
+local PrevPx = Lbl(PrevPanel, "120 px", 8, Theme.Sub, Enum.Font.GothamBold, Enum.TextXAlignment.Right)
+PrevPx.Size     = UDim2.fromOffset(60, 14)
+PrevPx.Position = UDim2.new(1, -68, 0, 8)
+
+-- preview render box
+local PrevBox = New("Frame", {
+    BackgroundColor3 = Theme.Preview,
+    BorderSizePixel  = 0,
+    Size             = UDim2.new(1, -16, 0, PREV_W - 16),
+    Position         = UDim2.fromOffset(8, 28),
+    ClipsDescendants = true,
+}, PrevPanel)
+Corner(PrevBox, 8)
+
+-- crosshair grid lines
+New("Frame", { BackgroundColor3 = Color3.fromRGB(40, 36, 56), BorderSizePixel = 0,
+    Size = UDim2.new(1,0,0,1), Position = UDim2.fromScale(0,0.5) }, PrevBox)
+New("Frame", { BackgroundColor3 = Color3.fromRGB(40, 36, 56), BorderSizePixel = 0,
+    Size = UDim2.new(0,1,1,0), Position = UDim2.fromScale(0.5,0) }, PrevBox)
+
+-- FOV ring
+local FOVRing = New("Frame", {
+    BackgroundTransparency = 1,
+    Size     = UDim2.fromOffset(88, 88),
+    Position = UDim2.fromScale(0.5, 0.5),
+    AnchorPoint = Vector2.new(0.5, 0.5),
+}, PrevBox)
+Corner(FOVRing, 999)
+Stroke(FOVRing, Theme.Accent, 2, 0.15)
+
+-- crosshair dot
+local CrossDot = New("Frame", {
+    BackgroundColor3 = Theme.White,
+    BorderSizePixel  = 0,
+    Size     = UDim2.fromOffset(5, 5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    AnchorPoint = Vector2.new(0.5, 0.5),
+}, PrevBox)
+Corner(CrossDot, 3)
+
+-- dummy figures
+local function PreviewDummy(parent, xOff, col)
+    local body = New("Frame", {
+        BackgroundColor3 = col or Color3.fromRGB(44,40,58),
+        BorderSizePixel  = 0,
+        Size     = UDim2.fromOffset(14, 32),
+        Position = UDim2.new(0.5, xOff, 0.5, 4),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+    }, parent)
+    Corner(body, 3)
+    local head = New("Frame", {
+        BackgroundColor3 = col or Color3.fromRGB(44,40,58),
+        BorderSizePixel  = 0,
+        Size     = UDim2.fromOffset(12, 12),
+        Position = UDim2.fromOffset(-1, -14),
+    }, body)
+    Corner(head, 6)
+    return body
+end
+
+PreviewDummy(PrevBox, -42)
+PreviewDummy(PrevBox, 0, Color3.fromRGB(50,90,145))
+PreviewDummy(PrevBox, 42)
+
+local AimStatusLbl = Lbl(PrevBox, "searching", 7, Theme.Dim)
+AimStatusLbl.Position = UDim2.fromOffset(6, 4)
+AimStatusLbl.Size     = UDim2.fromOffset(90, 12)
+
+-- ESP preview (same box, swapped visibility)
+local ESPPrevBox = New("Frame", {
+    BackgroundColor3 = Theme.Preview,
+    BorderSizePixel  = 0,
+    Size             = UDim2.new(1, -16, 0, PREV_W - 16),
+    Position         = UDim2.fromOffset(8, 28),
+    ClipsDescendants = true,
+    Visible          = false,
+}, PrevPanel)
+Corner(ESPPrevBox, 8)
+
+-- enemy silhouette in ESP preview
+local EspFig = New("Frame", {
+    BackgroundColor3 = Color3.fromRGB(50, 65, 100),
+    BorderSizePixel  = 0,
+    Size     = UDim2.fromOffset(52, 90),
+    Position = UDim2.fromScale(0.5, 0.5),
+    AnchorPoint = Vector2.new(0.5, 0.5),
+}, ESPPrevBox)
+Corner(EspFig, 4)
+Stroke(EspFig, Theme.BorderPink, 2, 0.1)
+
+local EspHead = New("Frame", {
+    BackgroundColor3 = Color3.fromRGB(50, 65, 100),
+    BorderSizePixel  = 0,
+    Size     = UDim2.fromOffset(26, 26),
+    Position = UDim2.fromOffset(13, -28),
+}, EspFig)
+Corner(EspHead, 13)
+Stroke(EspHead, Theme.BorderPink, 2, 0.1)
+
+local EspNameLbl = Lbl(ESPPrevBox, "Enemy", 8, Theme.Text, Enum.Font.GothamBold, Enum.TextXAlignment.Center)
+EspNameLbl.Size     = UDim2.fromOffset(80, 14)
+EspNameLbl.Position = UDim2.new(0.5, -40, 0, 8)
+
+-- health bar
+local EspHpBg = New("Frame", {
+    BackgroundColor3 = Theme.Card3,
+    BorderSizePixel  = 0,
+    Size     = UDim2.fromOffset(6, 90),
+    Position = UDim2.new(0.5, 34, 0.5, -45),
+}, ESPPrevBox)
+Corner(EspHpBg, 3)
+local EspHpFill = New("Frame", {
+    BackgroundColor3 = Theme.Green,
+    BorderSizePixel  = 0,
+    Size     = UDim2.new(1, 0, 0.72, 0),
+    Position = UDim2.new(0, 0, 0.28, 0),
+}, EspHpBg)
+Corner(EspHpFill, 3)
+
+local ESPStatLbl = Lbl(ESPPrevBox, "ESP is off", 7, Theme.Dim)
+ESPStatLbl.Position = UDim2.fromOffset(6, 4)
+ESPStatLbl.Size     = UDim2.fromOffset(90, 12)
+
+local PrevTitleESP = Lbl(PrevPanel, "ESP PREVIEW", 8, Theme.Sub, Enum.Font.GothamBold)
+PrevTitleESP.Size     = UDim2.new(1, -12, 0, 14)
+PrevTitleESP.Position = UDim2.fromOffset(8, 8)
+PrevTitleESP.Visible  = false
+
+-- ============================================================
+-- PAGES
+-- ============================================================
+local Pages = {}
+local function MakePage(name)
+    local p = New("Frame", {
+        Name                   = name,
+        BackgroundTransparency = 1,
+        Size                   = UDim2.fromScale(1, 1),
+        Visible                = false,
+        ClipsDescendants       = true,
+    }, ContentArea)
+    Pages[name] = p
+    return p
+end
+
+local PHome     = MakePage("Home")
+local PCombat   = MakePage("Combat")
+local PFriends  = MakePage("Friends")
+local PVisuals  = MakePage("Visuals")
+local PSettings = MakePage("Settings")
+
+-- ============================================================
+-- WIDGET BUILDERS
+-- ============================================================
+
+-- Section bullet header
+local function SectionBullet(parent, title, yOff)
+    local row = New("Frame", {
+        BackgroundTransparency = 1,
+        Size     = UDim2.new(1, -16, 0, 22),
+        Position = UDim2.fromOffset(8, yOff or 8),
+    }, parent)
+    local dot = New("Frame", {
+        BackgroundColor3 = Theme.Accent,
+        BorderSizePixel  = 0,
+        Size     = UDim2.fromOffset(6, 6),
+        Position = UDim2.fromOffset(0, 8),
+    }, row)
+    Corner(dot, 3)
+    local lbl = Lbl(row, title, 8, Theme.Sub, Enum.Font.GothamBold)
+    lbl.Position = UDim2.fromOffset(12, 0)
+    lbl.Size     = UDim2.new(1, -12, 1, 0)
+    return row
+end
+
+-- Full-width setting row: toggle
+local function RowToggle(parent, yOff, title, sub, init, cb)
+    local row = New("Frame", {
+        BackgroundColor3 = Theme.Card,
+        BorderSizePixel  = 0,
+        Size             = UDim2.new(1, -16, 0, sub and 64 or 48),
+        Position         = UDim2.fromOffset(8, yOff),
+    }, parent)
+    Corner(row, 8)
+    Stroke(row, Theme.Border)
+
+    -- small circle indicator
+    local circ = New("Frame", {
+        BackgroundTransparency = 1,
+        BorderSizePixel        = 0,
+        Size     = UDim2.fromOffset(10, 10),
+        Position = UDim2.fromOffset(12, sub and 27 or 19),
+    }, row)
+    Corner(circ, 5)
+    Stroke(circ, Theme.Dim)
+
+    local tLbl = Lbl(row, title, 10, Theme.Text, Enum.Font.GothamMedium)
+    tLbl.Position = UDim2.fromOffset(30, sub and 10 or 0)
+    tLbl.Size     = UDim2.new(1, -90, 0, 22)
+
+    if sub then
+        local sLbl = Lbl(row, sub, 8, Theme.Sub)
+        sLbl.Position = UDim2.fromOffset(30, 30)
+        sLbl.Size     = UDim2.new(1, -90, 0, 28)
+        sLbl.TextYAlignment = Enum.TextYAlignment.Top
+        sLbl.TextWrapped    = true
+    end
+
+    -- pill toggle right side
+    local TW, TH = 50, 26
+    local bg = New("Frame", {
+        BackgroundColor3 = init and Theme.Accent or Theme.Card3,
+        BorderSizePixel  = 0,
+        Size             = UDim2.fromOffset(TW, TH),
+        Position         = UDim2.new(1, -(TW+12), 0.5, -TH/2),
+    }, row)
+    Corner(bg, TH)
+    local knob = New("Frame", {
+        BackgroundColor3 = Theme.White,
+        BorderSizePixel  = 0,
+        Size             = UDim2.fromOffset(20, 20),
+        Position         = init and UDim2.fromOffset(27,3) or UDim2.fromOffset(3,3),
+    }, bg)
+    Corner(knob, 10)
+
+    local on = init == true
+    local function Render(v)
+        Tw(bg,   { BackgroundColor3 = v and Theme.Accent or Theme.Card3 }, 0.14):Play()
+        Tw(knob, { Position = v and UDim2.fromOffset(27,3) or UDim2.fromOffset(3,3) }, 0.14):Play()
+    end
+    local btn = New("TextButton", {
+        BackgroundTransparency = 1, Text = "",
+        Size = UDim2.fromScale(1,1), ZIndex = bg.ZIndex+1,
+    }, bg)
+    btn.Activated:Connect(function()
+        on = not on; Render(on); if cb then cb(on) end
+    end)
+
+    return {
+        Set = function(_, v) on = v; Render(v) end,
+        Get = function() return on end,
+        Row = row,
+    }
+end
+
+-- Full-width setting row: pill selector
+local function RowPillSel(parent, yOff, title, opts, def, cb)
+    local row = New("Frame", {
+        BackgroundColor3 = Theme.Card,
+        BorderSizePixel  = 0,
+        Size             = UDim2.new(1, -16, 0, 56),
+        Position         = UDim2.fromOffset(8, yOff),
+    }, parent)
+    Corner(row, 8)
+    Stroke(row, Theme.Border)
+
+    local tLbl = Lbl(row, title, 10, Theme.Text, Enum.Font.GothamMedium)
+    tLbl.Position = UDim2.fromOffset(12, 4)
+    tLbl.Size     = UDim2.new(1, -16, 0, 20)
+
+    local totalW = (#opts * 68) + (#opts-1)*4
+    local selRow = New("Frame", {
+        BackgroundTransparency = 1,
+        Size     = UDim2.fromOffset(totalW, 28),
+        Position = UDim2.new(1, -(totalW+12), 1, -36),
+    }, row)
+    New("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        Padding       = UDim.new(0, 4),
+    }, selRow)
+
+    local cur = def
+    local btns = {}
+    local function Upd()
+        for _, b in ipairs(btns) do
+            local sel = b.Name == cur
+            Tw(b, { BackgroundColor3 = sel and Theme.Accent or Theme.Card3 }, 0.12):Play()
+            b.TextColor3 = sel and Theme.White or Theme.Sub
+        end
+    end
+    for _, opt in ipairs(opts) do
+        local b = New("TextButton", {
+            Name             = opt,
+            BackgroundColor3 = opt==def and Theme.Accent or Theme.Card3,
+            BorderSizePixel  = 0,
+            Text             = opt,
+            TextColor3       = opt==def and Theme.White or Theme.Sub,
+            TextSize         = 8,
+            Font             = Enum.Font.GothamBold,
+            Size             = UDim2.fromOffset(68, 28),
+            AutoButtonColor  = false,
+        }, selRow)
+        Corner(b, 6)
+        table.insert(btns, b)
+        b.Activated:Connect(function() cur=opt; Upd(); if cb then cb(opt) end end)
+    end
+    return row
+end
+
+-- Full-width setting row: key button
+local function RowKeyBtn(parent, yOff, title, keyLabel, cb)
+    local row = New("Frame", {
+        BackgroundColor3 = Theme.Card,
+        BorderSizePixel  = 0,
+        Size             = UDim2.new(1, -16, 0, 48),
+        Position         = UDim2.fromOffset(8, yOff),
+    }, parent)
+    Corner(row, 8)
+    Stroke(row, Theme.Border)
+
+    local tLbl = Lbl(row, title, 10, Theme.Text, Enum.Font.GothamMedium)
+    tLbl.Position = UDim2.fromOffset(12, 0)
+    tLbl.Size     = UDim2.new(1, -120, 1, 0)
+
+    local kbg = New("Frame", {
+        BackgroundColor3 = Theme.AccentDark,
+        BorderSizePixel  = 0,
+        Size             = UDim2.fromOffset(72, 28),
+        Position         = UDim2.new(1, -84, 0.5, -14),
+    }, row)
+    Corner(kbg, 6)
+    local kLbl = Lbl(kbg, keyLabel or "···", 9, Theme.White, Enum.Font.GothamBold, Enum.TextXAlignment.Center)
+    kLbl.Size = UDim2.fromScale(1,1)
+    kLbl.TextXAlignment = Enum.TextXAlignment.Center
+    local kBtn = New("TextButton", {
+        BackgroundTransparency = 1, Text = "",
+        Size = UDim2.fromScale(1,1), ZIndex = kbg.ZIndex+1,
+    }, kbg)
+    if cb then kBtn.Activated:Connect(cb) end
+    return row, kLbl
+end
+
+-- Scrollable page wrapper
+local function PageScroll(page)
+    local scr = New("ScrollingFrame", {
+        BackgroundTransparency = 1,
+        BorderSizePixel        = 0,
+        Size                   = UDim2.fromScale(1, 1),
+        CanvasSize             = UDim2.new(0, 0, 0, 0),
+        AutomaticCanvasSize    = Enum.AutomaticSize.Y,
+        ScrollBarThickness     = 3,
+        ScrollBarImageColor3   = Theme.Accent,
+        ScrollingDirection     = Enum.ScrollingDirection.Y,
+    }, page)
+    New("UIPadding", { PaddingBottom = UDim.new(0, 12) }, scr)
+    return scr
+end
+
+-- ============================================================
+-- HOME PAGE
+-- ============================================================
+local HomeScr = PageScroll(PHome)
+
+-- Session card
+local SessCard = New("Frame", {
+    BackgroundColor3 = Theme.Card,
+    BorderSizePixel  = 0,
+    Size             = UDim2.new(1, -16, 0, 88),
+    Position         = UDim2.fromOffset(8, 8),
+}, HomeScr)
+Corner(SessCard, 10)
+Stroke(SessCard, Theme.Border)
+
+local SAv = New("ImageLabel", {
+    BackgroundColor3 = Theme.Card3,
+    BorderSizePixel  = 0,
+    Size     = UDim2.fromOffset(52, 52),
+    Position = UDim2.fromOffset(10, 18),
+    Image    = "",
+}, SessCard)
+Corner(SAv, 8)
+pcall(function()
+    SAv.Image = Players:GetUserThumbnailAsync(
+        LP.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+end)
+
+local WelcName = Lbl(SessCard, "Welcome back, "..LP.DisplayName, 13, Theme.Text, Enum.Font.GothamBold)
+WelcName.Position = UDim2.fromOffset(72, 14)
+WelcName.Size     = UDim2.new(1, -80, 0, 20)
+
+local WelcSub = Lbl(SessCard, "", 8, Theme.Sub)
+WelcSub.Position = UDim2.fromOffset(72, 36)
+WelcSub.Size     = UDim2.new(1, -80, 0, 14)
+
+local function InfoRow(parent, y, icon, txt)
+    local i = Lbl(parent, icon, 9, Theme.Accent, Enum.Font.Gotham, Enum.TextXAlignment.Center)
+    i.Size = UDim2.fromOffset(16, 14); i.Position = UDim2.fromOffset(72, y)
+    local l = Lbl(parent, txt, 8, Theme.Sub)
+    l.Size = UDim2.new(1, -96, 0, 14); l.Position = UDim2.fromOffset(90, y)
+    return l
+end
+
+local JobLine  = InfoRow(SessCard, 52, "◈", "Job: "..game.JobId:sub(1,12).."…")
+local PingLine = InfoRow(SessCard, 66, "◉", "Calculating…")
+
+-- Stats bar (players / ping / time)
+local StatsCard = New("Frame", {
+    BackgroundColor3 = Theme.Card,
+    BorderSizePixel  = 0,
+    Size             = UDim2.new(1, -16, 0, 64),
+    Position         = UDim2.fromOffset(8, 104),
+}, HomeScr)
+Corner(StatsCard, 10)
+Stroke(StatsCard, Theme.Border)
+
+-- game thumbnail placeholder
+local GameThumb = New("ImageLabel", {
+    BackgroundColor3 = Theme.Card3,
+    BorderSizePixel  = 0,
+    Size     = UDim2.fromOffset(56, 48),
+    Position = UDim2.fromOffset(8, 8),
+    Image    = "",
+    ScaleType = Enum.ScaleType.Crop,
+}, StatsCard)
+Corner(GameThumb, 6)
+
+local GameNameLbl = Lbl(StatsCard, game:GetService("MarketplaceService"):GetProductInfo and "" or tostring(game.Name), 9, Theme.Text, Enum.Font.GothamBold)
+GameNameLbl.Position = UDim2.fromOffset(72, 6)
+GameNameLbl.Size     = UDim2.new(1, -80, 0, 16)
+pcall(function()
+    local info = game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId)
+    GameNameLbl.Text = info.Name
+end)
+
+local PlrCountLbl  = Lbl(StatsCard, "👤 "..#Players:GetPlayers().." / 22", 8, Theme.Sub)
+PlrCountLbl.Position = UDim2.fromOffset(72, 24)
+PlrCountLbl.Size     = UDim2.fromOffset(100, 14)
+
+local PingCardLbl = Lbl(StatsCard, "📶 — ms", 8, Theme.Sub)
+PingCardLbl.Position = UDim2.fromOffset(176, 24)
+PingCardLbl.Size     = UDim2.fromOffset(80, 14)
+
+local TimeCardLbl = Lbl(StatsCard, "🕐 0m on this server", 8, Theme.Sub)
+TimeCardLbl.Position = UDim2.fromOffset(72, 40)
+TimeCardLbl.Size     = UDim2.new(1, -80, 0, 14)
+
+local JobCardLbl = Lbl(StatsCard, "💾 Job "..game.JobId:sub(1,8).."…", 8, Theme.Sub)
+JobCardLbl.Position = UDim2.fromOffset(176, 40)
+JobCardLbl.Size     = UDim2.fromOffset(120, 14)
+
+-- Action buttons row
+local ActRow = New("Frame", {
+    BackgroundTransparency = 1,
+    Size     = UDim2.new(1, -16, 0, 54),
+    Position = UDim2.fromOffset(8, 176),
+}, HomeScr)
+New("UIListLayout", {
+    FillDirection = Enum.FillDirection.Horizontal,
+    Padding       = UDim.new(0, 6),
+}, ActRow)
+
+local function ActCard(parent, ico, label, sub, cb)
+    local bW = math.floor(((IsMobile and WIN_W or 480) - 16 - 18) / 3)
+    local c = New("TextButton", {
+        BackgroundColor3 = Theme.Card,
+        BorderSizePixel  = 0,
+        Text = "", AutoButtonColor = false,
+        Size = UDim2.fromOffset(bW, 54),
+    }, parent)
+    Corner(c, 8); Stroke(c, Theme.Border)
+    local il = Lbl(c, ico, 14, Theme.Accent, Enum.Font.Gotham, Enum.TextXAlignment.Center)
+    il.Size = UDim2.fromOffset(28, 54); il.Position = UDim2.fromOffset(4, 0)
+    local tl = Lbl(c, label, 9, Theme.Text, Enum.Font.GothamBold)
+    tl.Position = UDim2.fromOffset(36, 8); tl.Size = UDim2.new(1,-40,0,18)
+    local sl = Lbl(c, sub, 7, Theme.Sub)
+    sl.Position = UDim2.fromOffset(36, 26); sl.Size = UDim2.new(1,-40,0,14)
+    c.MouseEnter:Connect(function() Tw(c,{BackgroundColor3=Theme.Card2},0.1):Play() end)
+    c.MouseLeave:Connect(function() Tw(c,{BackgroundColor3=Theme.Card},0.1):Play() end)
+    if cb then c.Activated:Connect(cb) end
+end
+
+ActCard(ActRow,"↺","Rejoin","same server",function()
+    pcall(function()
+        game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId,game.JobId,LP)
+    end)
+end)
+ActCard(ActRow,"⇄","Server Hop","find a fresh one",function()
+    pcall(function()
+        game:GetService("TeleportService"):Teleport(game.PlaceId,LP)
+    end)
+end)
+ActCard(ActRow,"⎘","Copy Job ID","share server",function()
+    pcall(function() if setclipboard then setclipboard(game.JobId) end end)
+end)
+
+-- Discord card
+local DiscCard = New("Frame", {
+    BackgroundColor3 = Color3.fromRGB(62, 46, 136),
+    BorderSizePixel  = 0,
+    Size             = UDim2.new(1, -16, 0, 58),
+    Position         = UDim2.fromOffset(8, 238),
+}, HomeScr)
+Corner(DiscCard, 10)
+New("UIGradient", {
+    Color    = ColorSequence.new(Color3.fromRGB(78,58,178), Color3.fromRGB(48,36,108)),
+    Rotation = 140,
+}, DiscCard)
+
+local DiscIcoL = Lbl(DiscCard, "◉", 18, Theme.White, Enum.Font.GothamBold, Enum.TextXAlignment.Center)
+DiscIcoL.Size = UDim2.fromOffset(42, 58)
+
+local DiscTitleL = Lbl(DiscCard, "Join the HanamiHub Discord", 10, Theme.White, Enum.Font.GothamBold)
+DiscTitleL.Position = UDim2.fromOffset(48, 4)
+DiscTitleL.Size     = UDim2.new(1, -200, 0, 20)
+
+local DiscSubL = Lbl(DiscCard, "updates first, new games, bug reports and requests", 8, Color3.fromRGB(178,168,210))
+DiscSubL.Position = UDim2.fromOffset(48, 26)
+DiscSubL.Size     = UDim2.new(1, -200, 0, 28)
+DiscSubL.TextWrapped = true
+
+local CopyInvBtn = New("TextButton", {
+    BackgroundColor3 = Color3.fromRGB(88,68,174),
+    BorderSizePixel  = 0,
+    Text = "◉  Copy invite",
+    TextColor3 = Theme.White, TextSize = 9, Font = Enum.Font.GothamBold,
+    Size = UDim2.fromOffset(110, 34),
+    Position = UDim2.new(1, -122, 0.5, -17),
+    AutoButtonColor = false,
+}, DiscCard)
+Corner(CopyInvBtn, 8)
+
+-- ============================================================
+-- COMBAT PAGE
+-- ============================================================
+local CombatScr = PageScroll(PCombat)
+
+SectionBullet(CombatScr, "AIMBOT", 8)
+
+local AimEnabledToggle = RowToggle(CombatScr, 34, "Enabled",
+    "camera lock while the key is held", S.AimAssist, function(v) S.AimAssist=v end)
+
+local _, AimKeyLbl = RowKeyBtn(CombatScr, 106, "Aim Key", "···")
+
+local HoldToggle = RowToggle(CombatScr, 162, "Hold Key Only",
+    "off means it aims all the time while the aimbot is enabled, with no key to hold",
+    S.HoldKeyOnly, function(v) S.HoldKeyOnly=v end)
+
+SectionBullet(CombatScr, "AIM MODE", 246)
+
+RowPillSel(CombatScr, 272, "Aim Mode", {"Camera","Mouse","Silent"}, "Camera", function(v)
+    S.SilentAim = (v=="Silent")
+end)
+
+SectionBullet(CombatScr, "TARGET", 336)
+
+RowPillSel(CombatScr, 362, "Target Part", {"Head","HumanoidRootPart"}, S.HitboxPart, function(v)
+    S.HitboxPart = v; S.TargetPart = v
+end)
+
+local TeamToggle  = RowToggle(CombatScr, 420, "Team Check",  "ignore teammates",    S.TeamCheck,  function(v) S.TeamCheck=v  end)
+local AliveToggle = RowToggle(CombatScr, 476, "Alive Check", "ignore dead players", S.AliveCheck, function(v) S.AliveCheck=v end)
+local WallToggle  = RowToggle(CombatScr, 532, "Wall Check",  "only target visible enemies", S.WallCheck, function(v) S.WallCheck=v end)
+
+-- ============================================================
+-- FRIENDS PAGE
+-- ============================================================
+local FriendScr = PageScroll(PFriends)
+
+local FriendInfoA = New("Frame", {
+    BackgroundColor3 = Theme.Card,
+    BorderSizePixel  = 0,
+    Size             = UDim2.new(1,-16,0,52),
+    Position         = UDim2.fromOffset(8, 8),
+}, FriendScr)
+Corner(FriendInfoA, 8); Stroke(FriendInfoA, Theme.Border)
+local FiA = Lbl(FriendInfoA, "Click a player to mark him. The aimbot and the triggerbot never take marked players.", 9, Theme.Text)
+FiA.Position = UDim2.fromOffset(12, 0); FiA.Size = UDim2.new(1,-16,1,0); FiA.TextWrapped = true
+
+local FriendInfoB = New("Frame", {
+    BackgroundColor3 = Theme.Card,
+    BorderSizePixel  = 0,
+    Size             = UDim2.new(1,-16,0,36),
+    Position         = UDim2.fromOffset(8, 68),
+}, FriendScr)
+Corner(FriendInfoB, 8); Stroke(FriendInfoB, Theme.Border)
+local FiB = Lbl(FriendInfoB, "The list is saved and survives a rejoin.", 9, Theme.Text)
+FiB.Position = UDim2.fromOffset(12, 0); FiB.Size = UDim2.new(1,-16,1,0)
+
+SectionBullet(FriendScr, "PLAYERS IN THIS SERVER", 112)
+
+local FriendList = New("Frame", {
+    BackgroundTransparency = 1,
+    Size     = UDim2.new(1,-16,0,0),
+    Position = UDim2.fromOffset(8, 136),
+    AutomaticSize = Enum.AutomaticSize.Y,
+}, FriendScr)
+New("UIListLayout", { Padding = UDim.new(0,4), SortOrder = Enum.SortOrder.LayoutOrder }, FriendList)
+
+local function BuildFriendList()
+    for _, c in ipairs(FriendList:GetChildren()) do
+        if c:IsA("Frame") then c:Destroy() end
+    end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local row = New("Frame", {
+            BackgroundColor3 = Theme.Card,
+            BorderSizePixel  = 0,
+            Size             = UDim2.new(1, 0, 0, 48),
+        }, FriendList)
+        Corner(row, 8); Stroke(row, Theme.Border)
+        local av = New("ImageLabel", {
+            BackgroundColor3 = Theme.Card3, BorderSizePixel = 0,
+            Size = UDim2.fromOffset(34,34), Position = UDim2.fromOffset(7,7), Image = "",
+        }, row)
+        Corner(av, 17)
+        pcall(function()
+            av.Image = Players:GetUserThumbnailAsync(plr.UserId,
+                Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+        end)
+        local nl = Lbl(row, plr.DisplayName, 10, Theme.Text, Enum.Font.GothamMedium)
+        nl.Position = UDim2.fromOffset(50, 8); nl.Size = UDim2.new(1,-60,0,16)
+        local ul = Lbl(row, "@"..plr.Name, 8, Theme.Sub)
+        ul.Position = UDim2.fromOffset(50, 26); ul.Size = UDim2.new(1,-60,0,13)
+        -- click to mark
+        local btn = New("TextButton", {
+            BackgroundTransparency = 1, Text = "",
+            Size = UDim2.fromScale(1,1), ZIndex = row.ZIndex+1,
+        }, row)
+        btn.Activated:Connect(function()
+            if S.FriendsList[plr.Name] then
+                S.FriendsList[plr.Name] = nil
+                Stroke(row, Theme.Border)
+            else
+                S.FriendsList[plr.Name] = true
+                Stroke(row, Theme.Green, 1, 0.2)
+            end
+        end)
+    end
+end
+BuildFriendList()
+Players.PlayerAdded:Connect(function() task.wait(0.2); BuildFriendList() end)
+Players.PlayerRemoving:Connect(function() task.wait(0.2); BuildFriendList() end)
+
+-- ============================================================
+-- VISUALS PAGE
+-- ============================================================
+local VisualsScr = PageScroll(PVisuals)
+
+SectionBullet(VisualsScr, "PLAYER ESP", 8)
+
+local ESPToggle = RowToggle(VisualsScr, 34, "Enabled", "master switch", S.ESP, function(v)
+    S.ESP = v
+    ESPStatLbl.Text = v and "ESP is on" or "ESP is off"
+end)
+
+RowPillSel(VisualsScr, 106, "Box Style", {"Box","Corners","None"}, S.BoxStyle, function(v) S.BoxStyle=v end)
+
+local HealthToggle = RowToggle(VisualsScr, 170, "Health Bar", nil, S.HealthESP, function(v) S.HealthESP=v end)
+local NamesToggle  = RowToggle(VisualsScr, 226, "Names",      nil, S.Names,     function(v) S.Names=v end)
+local TracersToggle= RowToggle(VisualsScr, 282, "Tracers",    nil, S.Tracers,   function(v) S.Tracers=v end)
+local DistToggle   = RowToggle(VisualsScr, 338, "Distance",   nil, S.DistanceESP, function(v) S.DistanceESP=v end)
+
+SectionBullet(VisualsScr, "CROSSHAIR", 394)
+
+local CrossDotToggle = RowToggle(VisualsScr, 420, "Centre Dot", nil, S.CrossCentreDot, function(v) S.CrossCentreDot=v end)
+
+-- ============================================================
+-- SETTINGS PAGE
+-- ============================================================
+local SettingsScr = PageScroll(PSettings)
+
+SectionBullet(SettingsScr, "THEME", 8)
+
+-- Theme grid
+local ThemeGrid = New("Frame", {
+    BackgroundTransparency = 1,
+    Size     = UDim2.new(1, -16, 0, 42),
+    Position = UDim2.fromOffset(8, 34),
+}, SettingsScr)
+New("UIListLayout", {
+    FillDirection = Enum.FillDirection.Horizontal,
+    Padding       = UDim.new(0, 6),
+}, ThemeGrid)
+
+local ThBtns = {}
+local function ApplyTheme(name)
+    local d = Themes[name]; if not d then return end
+    Theme.Accent = d.a; Theme.AccentDark = d.d
+    for n, b in pairs(ThBtns) do
+        Tw(b, { BackgroundTransparency = n==name and 0 or 0.55 }, 0.15):Play()
+    end
+end
+for name, data in pairs(Themes) do
+    local b = New("TextButton", {
+        Name = name,
+        BackgroundColor3 = data.a,
+        BackgroundTransparency = 0.55,
+        BorderSizePixel = 0,
+        Text = name, TextColor3 = Theme.White,
+        TextSize = 7, Font = Enum.Font.GothamBold,
+        AutoButtonColor = false,
+        Size = UDim2.fromOffset(72, 32),
+    }, ThemeGrid)
+    Corner(b, 6); ThBtns[name] = b
+    b.Activated:Connect(function() ApplyTheme(name) end)
+end
+
+SectionBullet(SettingsScr, "INTERFACE", 84)
+
+RowToggle(SettingsScr, 110, "Show FOV", nil, S.ShowFOV, function(v) S.ShowFOV=v end)
+
+SectionBullet(SettingsScr, "TARGETING", 166)
+
+RowToggle(SettingsScr, 192, "Wall Check",  nil, S.WallCheck,  function(v) S.WallCheck=v  end)
+RowToggle(SettingsScr, 248, "Alive Check", nil, S.AliveCheck, function(v) S.AliveCheck=v end)
+RowToggle(SettingsScr, 304, "Team Check",  nil, S.TeamCheck,  function(v) S.TeamCheck=v  end)
+
+-- ============================================================
+-- NAVIGATION
+-- ============================================================
+local TabDefs = {
+    { Name = "Home",     Icon = "⊞",  Page = "Home",     Sub = "your session at a glance" },
+    { Name = "Combat",   Icon = "◎",  Page = "Combat",   Sub = "aimbot, triggerbot, fov"  },
+    { Name = "Friends",  Icon = "♟",  Page = "Friends",  Sub = "players the bot never touches" },
+    { Name = "Visuals",  Icon = "👁",  Page = "Visuals",  Sub = "esp, tracers, crosshair"  },
+    { Name = "Settings", Icon = "⚙",  Page = "Settings", Sub = "themes, interface, config" },
+}
+
+local NavBtns = {}
+local SelectPage
+
+SelectPage = function(name)
+    S.Page = name
+
+    for pn, pg in pairs(Pages) do pg.Visible = pn==name end
+
+    -- update title
+    for _, td in ipairs(TabDefs) do
+        if td.Page == name then
+            TitleLbl.Text    = td.Name
+            SubTitleLbl.Text = td.Sub
+        end
+    end
+
+    -- preview panel content swap
+    local isCombat  = name == "Combat"  or name == "Settings"
+    local isVisuals = name == "Visuals"
+    PrevBox.Visible        = isCombat
+    PrevTitle.Visible      = isCombat
+    PrevPx.Visible         = isCombat
+    ESPPrevBox.Visible     = isVisuals
+    PrevTitleESP.Visible   = isVisuals
+    PrevPanel.Visible      = isCombat or isVisuals
+
+    -- aimbot status
+    AimStatusLbl.Text = S.AimAssist and "locking" or "searching"
+    FOVRing.Size      = UDim2.fromOffset(math.clamp(S.FOV/500*88,18,88)*2,
+                                         math.clamp(S.FOV/500*88,18,88)*2)
+
+    -- nav highlights
+    for tName, btn in pairs(NavBtns) do
+        local sel = tName == name
+        local selBg = btn:FindFirstChild("SelBg")
+        local icoL  = btn:FindFirstChild("IcoLbl")
+        if selBg then
+            Tw(selBg, { BackgroundTransparency = sel and 0.75 or 1 }, 0.15):Play()
+        end
+        if icoL then
+            icoL.TextColor3 = sel and Theme.Accent or Theme.Sub
+        end
+    end
+end
+
+for i, td in ipairs(TabDefs) do
+    local btn = New("TextButton", {
+        Name                   = td.Name,
+        BackgroundTransparency = 1,
+        BorderSizePixel        = 0,
+        Text                   = "",
+        Size                   = UDim2.fromOffset(SIDE_W - 8, 44),
+        AutoButtonColor        = false,
+        LayoutOrder            = i,
+    }, NavList)
+    Corner(btn, 8)
+
+    local selBg = New("Frame", {
+        Name                   = "SelBg",
+        BackgroundColor3       = Theme.Accent,
+        BackgroundTransparency = 1,
+        BorderSizePixel        = 0,
+        Size                   = UDim2.fromScale(1, 1),
+    }, btn)
+    Corner(selBg, 8)
+
+    local ico = Lbl(btn, td.Icon, 16, Theme.Sub, Enum.Font.Gotham, Enum.TextXAlignment.Center)
+    ico.Name           = "IcoLbl"
+    ico.Size           = UDim2.fromScale(1, 1)
+    ico.TextXAlignment = Enum.TextXAlignment.Center
+
+    btn.Activated:Connect(function() SelectPage(td.Page) end)
+    NavBtns[td.Name] = btn
+end
+
+-- ============================================================
+-- FOV OVERLAY
+-- ============================================================
+local FOVOverlay = New("Frame", {
+    BackgroundTransparency = 1,
+    BorderSizePixel        = 0,
+    Size    = UDim2.fromOffset(S.FOV*2, S.FOV*2),
+    Position = UDim2.fromScale(0.5, 0.5),
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Visible = false,
+    ZIndex  = 100,
+}, Screen)
+Corner(FOVOverlay, 999)
+Stroke(FOVOverlay, Theme.Accent, 1, 0.35)
+
+-- ============================================================
+-- GAMEPLAY
+-- ============================================================
+local function IsAlive(char)
+    local h = char and char:FindFirstChildOfClass("Humanoid")
+    return h and h.Health > 0
+end
+
+local function IsTeammate(plr)
+    if not S.TeamCheck then return false end
+    if not LP.Team or not plr.Team then return false end
+    return LP.Team == plr.Team
+end
+
+local function GetPart(char)
+    local p = char:FindFirstChild(S.TargetPart)
+    if p and p:IsA("BasePart") then return p end
+    return char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+end
+
+local function IsVisible(char, part)
+    if not S.WallCheck then return true end
+    local origin = Camera.CFrame.Position
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { LP.Character }
+    local res = Workspace:Raycast(origin, part.Position - origin, params)
+    if not res then return true end
+    return res.Instance:IsDescendantOf(char)
+end
+
+local function GetTarget()
+    local mouse = UIS:GetMouseLocation()
+    local best, bestD = nil, S.FOV
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LP and not IsTeammate(plr) and not S.FriendsList[plr.Name] then
+            local char = plr.Character
+            if char and (not S.AliveCheck or IsAlive(char)) then
+                local part = GetPart(char)
+                if part then
+                    local dist = (part.Position - Camera.CFrame.Position).Magnitude
+                    if dist <= S.Distance then
+                        local sc, vis = Camera:WorldToViewportPoint(part.Position)
+                        if vis and sc.Z > 0 then
+                            local cd = (Vector2.new(sc.X, sc.Y) - mouse).Magnitude
+                            if cd <= bestD and IsVisible(char, part) then
+                                bestD = cd; best = part
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+-- ============================================================
+-- ESP
+-- ============================================================
+local ESPMap = {}
+
+local function KillESP(plr)
+    local o = ESPMap[plr]; if not o then return end
+    if o.hl then o.hl:Destroy() end
+    if o.bb then o.bb:Destroy() end
+    ESPMap[plr] = nil
+end
+
+local function MakeESP(plr)
+    if plr == LP then return end
+    KillESP(plr)
+    local char = plr.Character; if not char then return end
+    local root = char:FindFirstChild("HumanoidRootPart")
+        or char:FindFirstChild("UpperTorso")
+        or char:FindFirstChild("Torso")
+    if not root then return end
+
+    local hl = New("Highlight", {
+        FillColor           = Theme.Accent,
+        OutlineColor        = Theme.White,
+        FillTransparency    = 0.78,
+        OutlineTransparency = 0.25,
+        DepthMode           = Enum.HighlightDepthMode.AlwaysOnTop,
+        Adornee             = char,
+    }, char)
+
+    local bb = New("BillboardGui", {
+        Adornee     = root,
+        Size        = UDim2.fromOffset(180, 35),
+        StudsOffset = Vector3.new(0, 3.2, 0),
+        AlwaysOnTop = true,
+    }, root)
+    local txt = Lbl(bb, "", 8, Theme.White, Enum.Font.GothamBold, Enum.TextXAlignment.Center)
+    txt.Size = UDim2.fromScale(1, 1)
+    txt.TextXAlignment = Enum.TextXAlignment.Center
+
+    ESPMap[plr] = { hl = hl, bb = bb, txt = txt }
+end
+
+local function TickESP()
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LP then
+            if not S.ESP then KillESP(plr)
+            else
+                local char = plr.Character
+                if not char then KillESP(plr); continue end
+                local root = char:FindFirstChild("HumanoidRootPart")
+                    or char:FindFirstChild("UpperTorso")
+                    or char:FindFirstChild("Torso")
+                if not root then KillESP(plr); continue end
+                local dist = (root.Position - Camera.CFrame.Position).Magnitude
+                if dist > S.ESPDistance then KillESP(plr); continue end
+                if not ESPMap[plr] then MakeESP(plr) end
+                local o = ESPMap[plr]
+                if o then
+                    o.hl.FillColor = Theme.Accent
+                    local parts = {}
+                    if S.Names       then table.insert(parts, plr.DisplayName) end
+                    if S.DistanceESP then table.insert(parts, "["..math.floor(dist).."m]") end
+                    if S.HealthESP   then
+                        local hum = char:FindFirstChildOfClass("Humanoid")
+                        if hum then table.insert(parts, "HP "..math.floor(hum.Health)) end
+                    end
+                    o.txt.Text = table.concat(parts, "  ")
+                end
+            end
+        end
+    end
+end
+
+Players.PlayerRemoving:Connect(KillESP)
+Players.PlayerAdded:Connect(function(plr)
+    plr.CharacterAdded:Connect(function()
+        task.wait(0.5)
+        if S.ESP then MakeESP(plr) end
+    end)
+end)
+
+-- ============================================================
+-- INPUT
+-- ============================================================
+UIS.InputBegan:Connect(function(input, proc)
+    if proc then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then S.AimHeld = true end
+    if input.KeyCode == Enum.KeyCode.LeftAlt then
+        S.MenuOpen = not S.MenuOpen
+        Main.Visible = S.MenuOpen
+        Reopen.Visible = not S.MenuOpen
+    end
+end)
+UIS.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then S.AimHeld = false end
+end)
+
+-- Mobile aim button
+local MobAim = New("TextButton", {
+    BackgroundColor3 = Theme.Card,
+    BorderSizePixel  = 0,
+    Text = "AIM", TextColor3 = Theme.Sub,
+    TextSize = 7, Font = Enum.Font.GothamBold,
+    Size     = UDim2.fromOffset(48, 36),
+    Position = UDim2.new(1, -60, 1, -54),
+    AutoButtonColor = false,
+    Visible = IsMobile, ZIndex = 50,
+}, Screen)
+Corner(MobAim, 8); Stroke(MobAim, Theme.Border)
+MobAim.Activated:Connect(function()
+    S.AimHeld = not S.AimHeld
+    Tw(MobAim, { BackgroundColor3 = S.AimHeld and Theme.Accent or Theme.Card }, 0.14):Play()
+    MobAim.TextColor3 = S.AimHeld and Theme.White or Theme.Sub
+end)
+
+-- Reopen pill
+local Reopen = New("TextButton", {
+    BackgroundColor3 = Theme.Accent,
+    BorderSizePixel  = 0,
+    Text = "H", TextColor3 = Theme.White,
+    TextSize = 14, Font = Enum.Font.GothamBold,
+    Size     = UDim2.fromOffset(42, 42),
+    Position = UDim2.new(1, -55, 0.5, -21),
+    AutoButtonColor = false,
+    Visible  = false, ZIndex = 100,
+}, Screen)
+Corner(Reopen, 10)
+
+Reopen.Activated:Connect(function()
+    S.MenuOpen = true; Main.Visible = true; Reopen.Visible = false
+end)
+MinBtn.Activated:Connect(function()
+    S.MenuOpen = false; Main.Visible = false; Reopen.Visible = true
+end)
+CloseBtn.Activated:Connect(function()
+    S.MenuOpen = false
+    Tw(Main, { Size = UDim2.fromOffset(0,0) }, 0.2):Play()
+    task.delay(0.2, function() Main.Visible = false; Reopen.Visible = true end)
+end)
+
+-- ============================================================
+-- DRAG
+-- ============================================================
+local Drag, DragStart, DragPos = false, nil, nil
+TopBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+        Drag = true; DragStart = input.Position; DragPos = Main.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then Drag = false end
+        end)
+    end
+end)
+UIS.InputChanged:Connect(function(input)
+    if not Drag then return end
+    if input.UserInputType == Enum.UserInputType.MouseMovement
+    or input.UserInputType == Enum.UserInputType.Touch then
+        local d = input.Position - DragStart
+        Main.Position = UDim2.new(
+            DragPos.X.Scale, DragPos.X.Offset + d.X,
+            DragPos.Y.Scale, DragPos.Y.Offset + d.Y)
+    end
+end)
+
+-- ============================================================
+-- RENDER LOOP
+-- ============================================================
+local Frames, LastSec = 0, os.clock()
+local SessionStart = os.clock()
+
+RS.RenderStepped:Connect(function(dt)
+    Frames += 1
+    if os.clock() - LastSec >= 1 then
+        Frames   = 0
+        LastSec  = os.clock()
+        PlrCountLbl.Text = "👤 "..#Players:GetPlayers().." / 22"
+    end
+
+    -- session time
+    local elapsed = math.floor(os.clock() - SessionStart)
+    local mins    = math.floor(elapsed / 60)
+    TimeCardLbl.Text = "🕐 "..mins.."m on this server"
+
+    -- FOV overlay
+    FOVOverlay.Size    = UDim2.fromOffset(S.FOV*2, S.FOV*2)
+    FOVOverlay.Visible = S.ShowFOV and S.AimAssist
+
+    -- aimbot
+    if S.AimAssist and (S.AimHeld or not S.HoldKeyOnly) then
+        local tgt = GetTarget()
+        AimStatusLbl.Text = tgt and "locking" or "searching"
+        if tgt then
+            local desired = CFrame.lookAt(Camera.CFrame.Position, tgt.Position)
+            local alpha   = math.clamp(S.Smoothness * 6 * dt, 0.01, 0.5)
+            Camera.CFrame = Camera.CFrame:Lerp(desired, alpha)
+        end
+    else
+        AimStatusLbl.Text = S.AimAssist and "ready" or "searching"
+    end
+
+    -- ESP tick
+    if S.ESP then TickESP() end
+end)
+
+-- ============================================================
+-- PING
+-- ============================================================
+task.spawn(function()
+    while task.wait(2) do
+        pcall(function()
+            local ping = math.floor(
+                game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue())
+            PingLine.Text     = "◉  Ping: "..ping.." ms"
+            PingCardLbl.Text  = "📶 "..ping.." ms"
+        end)
+    end
+end)
+
+-- ============================================================
+-- GLOBAL API
+-- ============================================================
+_G.HanamiV3 = {
+    State      = S,
+    SelectPage = SelectPage,
+    GetTarget  = GetTarget,
+    Open       = function() S.MenuOpen=true;  Main.Visible=true;  Reopen.Visible=false end,
+    Close      = function() S.MenuOpen=false; Main.Visible=false; Reopen.Visible=true  end,
+    Toggle     = function()
+        S.MenuOpen = not S.MenuOpen
+        Main.Visible    = S.MenuOpen
+        Reopen.Visible  = not S.MenuOpen
+    end,
+}
+
+-- ============================================================
+-- INIT
+-- ============================================================
+SelectPage("Home")
+ApplyTheme("Hanami")
+
+local targetSz = Main.Size
+Main.Size = UDim2.fromOffset(0, 0)
+Tw(Main, { Size = targetSz }, 0.36):Play()
+
+print("[HANAMI V3] Device:", IsMobile and "Mobile" or "PC", "| Place:", game.PlaceId)
