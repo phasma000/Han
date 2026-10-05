@@ -1,14 +1,11 @@
 --[[
 ===============================================================
-        HANAMI V4.0 — UI LIBRARY EDITION BY NONO
+        HANAMI V3.2.1 — SILENT FAIL PATCHED
 ===============================================================
-    - Per-feature keybinds (bind anything to any key)
-    - Aim button visibility toggle
-    - Advanced HSV color picker (hue strip + SV square + hex)
-    - Upgraded H reopen button (draggable pill w/ status LEDs + quick actions)
-    - Mobile key cluster (virtual buttons for your binds)
-    - Info tooltips on every setting (tap ? to learn)
-    - Dedicated Help page that explains every concept
+    - Camera acquires with retry loop (no silent bail)
+    - GUI parent uses gethui → CoreGui → PlayerGui chain
+    - Early returns replaced with error() so pcall actually fails
+    - Trace prints at every stage so you can see the wall
 ===============================================================
 ]]
 
@@ -24,28 +21,47 @@ local Stats     = game:GetService("Stats")
 local TPS       = game:GetService("TeleportService")
 local MPS       = game:GetService("MarketplaceService")
 local VU        = game:GetService("VirtualUser")
+
 local LP = Players.LocalPlayer
 
-local function Trace(m) print("[HANAMI] "..tostring(m)) end
+-- trace = loud output so silent fails become visible
+local function Trace(msg) print("[HANAMI] "..tostring(msg)) end
+Trace("stage 1/8 services loaded")
 
+-- cleanup registry
 if _G.__HanamiCleanup then pcall(_G.__HanamiCleanup) end
 local _conns = {}
 local function Track(c)
-    if c and typeof(c) == "RBXScriptConnection" then table.insert(_conns, c) end
+    if c and typeof(c) == "RBXScriptConnection" then
+        table.insert(_conns, c)
+    end
     return c
 end
 local function UntrackAll()
     for _, c in ipairs(_conns) do
-        if c and typeof(c) == "RBXScriptConnection" then pcall(function() c:Disconnect() end) end
+        if c and typeof(c) == "RBXScriptConnection" then
+            pcall(function() c:Disconnect() end)
+        end
     end
     _conns = {}
 end
 
+-- camera with retry
+Trace("stage 2/8 acquiring camera")
 local Camera = WS.CurrentCamera
 local tries = 0
-while not Camera and tries < 50 do tries += 1; task.wait(0.1); Camera = WS.CurrentCamera end
-if not Camera then error("[HANAMI] no camera") end
+while not Camera and tries < 50 do
+    tries += 1
+    task.wait(0.1)
+    Camera = WS.CurrentCamera
+end
+if not Camera then
+    error("[HANAMI] Camera never became available after 5s — executor/timing issue")
+end
+Trace("camera OK: "..tostring(Camera))
 
+-- gui parent
+Trace("stage 3/8 acquiring GUI parent")
 local GP
 pcall(function() if typeof(gethui)=="function" then GP=gethui() end end)
 if not GP then
@@ -61,10 +77,15 @@ if not GP then
     local ok, pg = pcall(function() return LP:WaitForChild("PlayerGui", 5) end)
     if ok and pg then GP = pg end
 end
-if not GP then error("[HANAMI] no gui parent") end
-pcall(function() local o=GP:FindFirstChild("HanamiV4") if o then o:Destroy() end end)
+if not GP then
+    error("[HANAMI] No writable GUI parent — gethui/CoreGui/PlayerGui all failed")
+end
+Trace("GUI parent OK")
+
+pcall(function() local o=GP:FindFirstChild("HanamiV3") if o then o:Destroy() end end)
 
 local isMobile = UIS.TouchEnabled and not UIS.KeyboardEnabled
+Trace("stage 4/8 isMobile = "..tostring(isMobile))
 
 -- ============================================================
 -- THEME
@@ -79,8 +100,8 @@ local C = {
     dim=Color3.fromRGB(70,62,86), white=Color3.fromRGB(255,255,255),
     green=Color3.fromRGB(60,208,120), red=Color3.fromRGB(215,65,88),
     yellow=Color3.fromRGB(240,190,60), blue=Color3.fromRGB(80,180,255),
-    black=Color3.fromRGB(0,0,0),
 }
+
 local THEMES = {
     Hanami  = {a=Color3.fromRGB(225,105,158), d=Color3.fromRGB(165,72,118)},
     Purple  = {a=Color3.fromRGB(148,90,238),  d=Color3.fromRGB(98,56,172) },
@@ -88,91 +109,13 @@ local THEMES = {
     Cyan    = {a=Color3.fromRGB(58,183,218),  d=Color3.fromRGB(44,108,148)},
     Emerald = {a=Color3.fromRGB(58,198,132),  d=Color3.fromRGB(36,128,90) },
 }
-local PRESET_COLORS = {
+
+local COLORS = {
     Color3.fromRGB(210,88,98),  Color3.fromRGB(225,125,160),
     Color3.fromRGB(200,175,62), Color3.fromRGB(82,190,116),
     Color3.fromRGB(62,174,198), Color3.fromRGB(230,230,235),
     Color3.fromRGB(186,182,192),Color3.fromRGB(210,118,172),
-    Color3.fromRGB(80,180,255), Color3.fromRGB(240,150,60),
-    Color3.fromRGB(255,255,255),Color3.fromRGB(30,30,30),
 }
-
--- ============================================================
--- HELP / INFO TEXT (used by tooltips and the Help page)
--- ============================================================
-local HELP = {
-    aim = "Aimbot. While this is ON and your Aim Key is held, the camera snaps toward the nearest valid target inside the FOV. Release the key and it stops.",
-    aimKey = "The key you hold to make the aimbot engage. On mobile this becomes a floating on-screen button instead.",
-    holdOnly = "ON = aimbot only works while the key is held (legit feel).\nOFF = aimbot works continuously as soon as Enabled is ON (rage feel).",
-    aimMode = "Camera = visibly moves your camera toward the target (legit, smoother).\nSilent = hits register server-side without camera moving. Needs an executor that supports metamethod hooks.",
-    trigger = "Triggerbot. Fires your weapon automatically when the crosshair pixel sits on a valid enemy. Use with or without aimbot.",
-    trigDelay = "Milliseconds to wait after the crosshair is on target before firing. Higher = more human. 40-80ms is a natural human reaction window.",
-    trigHold = "ON = triggerbot only fires while Aim Key is held.\nOFF = triggerbot fires whenever crosshair is on target, aimbot or not.",
-    predOn = "Velocity Lead. Aims ahead of moving players, like a real shooter leads a moving target. Essential for runners.",
-    predLead = "How far ahead to aim. 0.10-0.20 is a good default. Too high overshoots, too low misses runners.",
-    noRecoil = "Cancels camera kick when you fire. Only works on games that apply recoil client-side.",
-    hbExpand = "Temporarily enlarges the target's hitbox while aiming. Detectable on strict anticheats — use at your own risk.",
-    fov = "Field of View. The aimbot only locks onto targets inside this circle (in pixels from the crosshair). Bigger = more targets, less precise.",
-    fovShape = "Shape of the aim zone.\nCircle = standard radial area.\nSquare = rectangular. Good for wide-screen awareness.\nCone = narrower horizontally, better for precise aiming.",
-    smooth = "How fast the camera moves to the target. Low = slow natural snap, high = near-instant snap.",
-    smoothCurve = "Shape of the aim movement over time.\nLinear = constant speed.\nEaseIn = starts slow, ends fast.\nEaseOut = starts fast, ends slow (most human).\nSCurve = slow-fast-slow, like a real hand flick.",
-    dist = "Max targeting distance in studs. Enemies further than this are ignored.",
-    targetPriority = "How the aimbot picks between multiple valid targets.\nCrosshair = whichever is closest to your crosshair pixel.\nClosest = nearest by world distance.\nLowestHP = weakest target.\nThreat = whoever is aiming at you hardest (best for sweaty lobbies).",
-    stickyLock = "When ON, aimbot stays locked on one target and doesn't switch mid-fight unless they die or leave FOV. Prevents flickering between two enemies.",
-    stickyTime = "How long (in seconds) the sticky lock persists before re-evaluating. Higher = more committed to one target.",
-    hitboxPart = "Which body part the aimbot targets. Head = highest damage. HumanoidRootPart = most reliable. UpperTorso = balanced.",
-    team = "When ON, players on your own team are ignored.",
-    alive = "When ON, dead players are skipped.",
-    wall = "When ON, only targets with a clear line-of-sight from your camera are considered. Adds CPU cost.",
-    humanJitter = "Adds tiny random wobble to the aim point. Mimics natural hand tremor. Makes aim look less robotic.",
-    humanDelay = "Wait a randomized reaction time before engaging a target. Makes aimbot feel human (you don't react in 0ms).",
-    esp = "Player ESP. Draws highlights, names, and info through walls.",
-    names = "Shows the player's display name above their character.",
-    distEsp = "Shows distance in studs next to the name.",
-    hpEsp = "Shows numeric health text in the ESP label.",
-    hpBar = "Draws a vertical colored health bar next to the ESP label.",
-    tracers = "Draws lines from the bottom of your screen to each visible player.",
-    espTeamColor = "Colors ESP based on the player's team color if the game has teams.",
-    distFade = "ESP color shifts from green (close) to red (far) based on distance.",
-    boxStyle = "Visual style.\nBox = full outline highlight.\nCorners = corner-bracket style (cleaner).\nNone = no highlight at all.",
-    glowOn = "Master toggle for the Highlight object (the see-through colored overlay).",
-    chams = "Replaces the target's material with ForceField so they appear as a glowing colored shape. More subtle than Highlight on some games.",
-    skeleton = "Draws limb lines connecting the joints. Cleaner than highlight for precise target reading.",
-    boxEsp = "Draws a projected 2D rectangle around each player using screen coordinates.",
-    espDist = "Max distance (studs) for ESP to render. Lower = better perf.",
-    espFill = "Opacity of the ESP fill. 0 = invisible fill, 0.9 = almost solid.",
-    espOutline = "Opacity of the outline. Lower = more visible outline.",
-    crossDot = "Draws a small dot exactly at screen center. Helps with aim reference.",
-    targetHud = "Floating panel showing current target's name, HP bar, and distance.",
-    targetHudPos = "Which corner of the screen the target HUD sits in.",
-    watermark = "Small info bar at the top-left showing version, FPS, ping, and ESP rate.",
-    showFps = "Show live frame rate in the watermark.",
-    showPing = "Show live server ping in the watermark.",
-    adaptiveEsp = "When frame time spikes above 25ms, automatically lower ESP refresh rate to keep the game smooth.",
-    animsOn = "Tween transitions on toggles, sliders, etc. OFF = instant snapping (slightly less CPU).",
-    showFov = "Draw a visual ring/square on screen showing the aimbot's FOV zone.",
-    mobileBtnEnabled = "Show or hide the floating mobile aim button entirely.",
-    mobileBtnMode = "Hold = acts like holding a keyboard key. Release finger to stop.\nToggle = tap once to engage, tap again to disengage.",
-    mobileBtnSide = "Which side of the screen the aim button starts on. It's draggable after that.",
-    mobileBtnSize = "Diameter of the mobile aim button in pixels.",
-    mobileBtnOpacity = "How see-through the aim button is.",
-    mobSlideAim = "Swipe up from the bottom 20% of the screen to aim, instead of using the button.",
-    mobileKeyCluster = "Shows small virtual buttons for each of your keybinds on screen. Tap to fire that key.",
-    keyMenu = "Key that toggles this menu open/closed.",
-    keyEsp = "Key that toggles ESP on/off.",
-    keyPanic = "Kill switch. Instantly disables every feature and closes the menu.",
-    keyAim = "Key held to engage the aimbot (same as Aim Key).",
-    keyTrigger = "Key held to engage the triggerbot.",
-    keySkeleton = "Toggle skeleton ESP on/off with this key.",
-    keyChams = "Toggle chams on/off with this key.",
-    hbPanic = "The panic key is your emergency stop. Bind it to something you can hit instantly.",
-    hbFloating = "The H pill in the corner. Tap to open menu. Drag it anywhere. Drag out to a corner to snap.",
-    hbQuickActions = "Long-press the H pill to fire a quick action: Panic, Toggle ESP, Toggle Aim, Toggle Trigger.",
-    cfgSlot = "Named config slots. Save different setups (PvP, Farm, Stealth) and load them on the fly.",
-    friends = "Tap a player to cycle their list. Friend = green, Blacklist = red (never targeted), Watch = yellow (tagged only).",
-    hsvPicker = "Advanced color picker: hue strip on the right, saturation/value square on the left, hex field at the bottom for exact codes.",
-}
-local function GetHelp(key) return HELP[key] or "No description available." end
 
 -- ============================================================
 -- STATE
@@ -180,53 +123,43 @@ local function GetHelp(key) return HELP[key] or "No description available." end
 local S = {
     page="Home", open=true,
     aim=false, heldPC=false, heldMobile=false, holdOnly=true,
-    aimMode="Camera",
+    aimMode="Camera", aimKey=Enum.KeyCode.LeftAlt,
     fov=120, smooth=0.18, dist=1000,
     hitboxPart="HumanoidRootPart", aimColor=Color3.fromRGB(225,105,158),
     fovShape="Circle",
-    team=true, alive=true, wall=false,
-    friends={}, blacklist={}, watchlist={},
+    team=true, alive=true, wall=false, friends={},
+    blacklist={}, watchlist={},
     trigger=false, trigDelay=45, trigHold=false, trigTeam=true,
     predLead=0.12, predOn=true,
     stickyLock=true, stickyTime=0.5,
-    noRecoil=false, hbExpand=false, hbSize=4,
+    noRecoil=false,
+    hbExpand=false, hbSize=4,
     targetPriority="Crosshair",
     smoothCurve="EaseOut",
     humanJitter=true, humanJitterAmp=0.3,
     humanDelay=true, humanDelayMin=40, humanDelayMax=150,
-    esp=false, names=true, distEsp=true, hpEsp=false, hpBar=true, tracers=false,
+    esp=false, names=true, distEsp=true, hpEsp=false, tracers=false,
     boxStyle="Box", espDist=1500, espColor=Color3.fromRGB(225,105,158),
     espRefresh=20, espFill=0.78, espOutline=0.25,
     boxEsp=false, boxColor=Color3.fromRGB(225,105,158),
     skeleton=false, skeletonColor=Color3.fromRGB(225,105,158),
     chams=false, chamsColor=Color3.fromRGB(80,180,255),
-    distFade=false, espTeamColor=false,
+    distFade=false, hpBar=true, espTeamColor=false,
     targetHud=true, targetHudPos="TopLeft",
     crossDot=true, crossColor=Color3.fromRGB(225,105,158),
     showFov=true,
     preset="Balanced", animsOn=true, glowOn=true,
     adaptiveEsp=true, adaptiveMinHz=8,
-    -- mobile
-    mobileBtnEnabled=true, mobileBtnMode="Hold", mobileBtnSide="Right",
+    mobileBtnMode="Hold", mobileBtnSide="Right",
     mobileBtnSize=64, mobileBtnOpacity=0.75,
     mobBtnX=0.85, mobBtnY=0.5, mobSlideAim=false,
-    mobileKeyCluster=false,
-    -- watermark
     watermark=true, showFps=true, showPing=true,
-    -- h button
-    hbX=0.98, hbY=0.5, hbVisible=true,
-    -- binds
-    binds = {
-        keyMenu    = Enum.KeyCode.LeftControl,
-        keyAim     = Enum.KeyCode.LeftAlt,
-        keyTrigger = Enum.KeyCode.CapsLock,
-        keyEsp     = Enum.KeyCode.RightShift,
-        keySkeleton= Enum.KeyCode.RightAlt,
-        keyChams   = Enum.KeyCode.RightControl,
-        keyPanic   = Enum.KeyCode.Delete,
-    },
+    keyMenu=Enum.KeyCode.LeftControl,
+    keyEsp=Enum.KeyCode.RightShift,
+    keyPanic=Enum.KeyCode.Delete,
     cfgSlot="default",
 }
+
 local function Held() return S.heldPC or S.heldMobile end
 
 -- ============================================================
@@ -255,6 +188,7 @@ local function Serializable(t)
     end
     return out
 end
+
 local function Deserialize(t)
     local out = {}
     for k, v in pairs(t) do
@@ -270,8 +204,11 @@ local function Deserialize(t)
     end
     return out
 end
+
 local function SaveFriends()
-    pcall(function() if writefile then writefile(FriendsFile(), HS:JSONEncode(S.friends)) end end)
+    pcall(function()
+        if writefile then writefile(FriendsFile(), HS:JSONEncode(S.friends)) end
+    end)
 end
 local function LoadFriends()
     pcall(function()
@@ -282,19 +219,23 @@ local function LoadFriends()
 end
 local function SaveConfig(slot)
     slot = slot or S.cfgSlot
-    pcall(function() if writefile then writefile(CfgFile(slot), HS:JSONEncode(Serializable(S))) end end)
+    pcall(function()
+        if writefile then writefile(CfgFile(slot), HS:JSONEncode(Serializable(S))) end
+    end)
 end
 local function LoadConfig(slot)
     slot = slot or S.cfgSlot
     pcall(function()
         if isfile and isfile(CfgFile(slot)) then
-            local r = Deserialize(HS:JSONDecode(readfile(CfgFile(slot))))
+            local d = HS:JSONDecode(readfile(CfgFile(slot)))
+            local r = Deserialize(d)
             for k, v in pairs(r) do
                 if S[k] ~= nil then S[k] = v end
             end
         end
     end)
 end
+
 LoadFriends()
 LoadConfig()
 
@@ -327,6 +268,7 @@ local function Lbl(par,txt,sz,col,font,xa)
         TextWrapped=true,
     },par)
 end
+
 local function CurveAlpha(t, mode)
     if mode == "Linear" then return t end
     if mode == "EaseIn" then return t*t end
@@ -334,32 +276,14 @@ local function CurveAlpha(t, mode)
     if mode == "SCurve" then return t*t*(3-2*t) end
     return t
 end
-local function ColorToHex(c)
-    return string.format("#%02X%02X%02X",
-        math.floor(c.R*255+.5), math.floor(c.G*255+.5), math.floor(c.B*255+.5))
-end
-local function HexToColor(h)
-    h = h:gsub("#","")
-    if #h ~= 6 then return nil end
-    local r = tonumber(h:sub(1,2),16)
-    local g = tonumber(h:sub(3,4),16)
-    local b = tonumber(h:sub(5,6),16)
-    if not r or not g or not b then return nil end
-    return Color3.fromRGB(r,g,b)
-end
-local function ColorToHSV(c)
-    return Color3.toHSV(c)
-end
-local function HSVToColor(h,s,v)
-    return Color3.fromHSV(h,s,v)
-end
 
 -- ============================================================
 -- LAYOUT
 -- ============================================================
 local VP = Camera.ViewportSize
 local W = isMobile and (VP.X - 8) or 900
-local H = isMobile and math.clamp(math.floor(VP.Y * 0.78), 420, 680) or 500
+local H = isMobile and math.clamp(math.floor(VP.Y * 0.72), 400, 660) or 480
+
 local TOP  = 46
 local SIDE = isMobile and 48 or 52
 local CONT = W - SIDE
@@ -369,9 +293,11 @@ local PAD  = 10
 -- SCREEN
 -- ============================================================
 local Screen = N("ScreenGui",{
-    Name="HanamiV4",ResetOnSpawn=false,IgnoreGuiInset=true,
+    Name="HanamiV3",ResetOnSpawn=false,IgnoreGuiInset=true,
     ZIndexBehavior=Enum.ZIndexBehavior.Sibling,DisplayOrder=999,
 },GP)
+
+Trace("stage 5/8 building GUI")
 
 -- ============================================================
 -- TOASTS
@@ -381,7 +307,12 @@ local ToastCont = N("Frame",{
     Size=UDim2.fromOffset(220,300),
     Position=UDim2.new(1,-228,0,60),
 },Screen)
-N("UIListLayout",{FillDirection=Enum.FillDirection.Vertical,Padding=UDim.new(0,6),SortOrder=Enum.SortOrder.LayoutOrder},ToastCont)
+N("UIListLayout",{
+    FillDirection=Enum.FillDirection.Vertical,
+    Padding=UDim.new(0,6),
+    SortOrder=Enum.SortOrder.LayoutOrder,
+},ToastCont)
+
 local toastOrder = 0
 local function Toast(msg, color)
     toastOrder += 1
@@ -391,8 +322,11 @@ local function Toast(msg, color)
         BackgroundTransparency=1, LayoutOrder = -toastOrder,
     },ToastCont)
     Cr(f,8); local sk = Sk(f, color or C.accent, 1, 1)
-    local bar = N("Frame",{BackgroundColor3=color or C.accent,BorderSizePixel=0,
-        Size=UDim2.fromOffset(3,20),Position=UDim2.fromOffset(6,8)},f); Cr(bar,2)
+    local bar = N("Frame",{
+        BackgroundColor3=color or C.accent,BorderSizePixel=0,
+        Size=UDim2.fromOffset(3,20),
+        Position=UDim2.fromOffset(6,8),
+    },f); Cr(bar,2)
     local t = Lbl(f,msg,9,C.text,Enum.Font.GothamMedium)
     t.Position=UDim2.fromOffset(16,0); t.Size=UDim2.new(1,-22,1,0)
     t.TextTruncate=Enum.TextTruncate.AtEnd
@@ -406,7 +340,7 @@ local function Toast(msg, color)
 end
 
 -- ============================================================
--- MAIN FRAME
+-- MAIN
 -- ============================================================
 local Main = N("Frame",{
     BackgroundColor3=C.panel,BorderSizePixel=0,
@@ -417,8 +351,10 @@ local Main = N("Frame",{
 },Screen)
 Cr(Main,12); local mainStroke = Sk(Main,C.bpink,1,0.28)
 
-local Top = N("Frame",{BackgroundColor3=C.panel,BorderSizePixel=0,
-    Size=UDim2.new(1,0,0,TOP)},Main)
+local Top = N("Frame",{
+    BackgroundColor3=C.panel,BorderSizePixel=0,
+    Size=UDim2.new(1,0,0,TOP),
+},Main)
 N("Frame",{BackgroundColor3=C.border,BorderSizePixel=0,
     Size=UDim2.new(1,0,0,1),Position=UDim2.new(0,0,1,-1)},Top)
 
@@ -434,6 +370,7 @@ local MinBtn = N("TextButton",{BackgroundColor3=C.card2,BorderSizePixel=0,
     Text="—",TextColor3=C.sub,TextSize=11,Font=Enum.Font.GothamBold,
     Size=UDim2.fromOffset(26,26),Position=UDim2.new(1,-57,0.5,-13),
     AutoButtonColor=false,ZIndex=8},Top); Cr(MinBtn,6)
+
 local CloseBtn = N("TextButton",{BackgroundColor3=C.card2,BorderSizePixel=0,
     Text="×",TextColor3=C.sub,TextSize=16,Font=Enum.Font.GothamMedium,
     Size=UDim2.fromOffset(26,26),Position=UDim2.new(1,-27,0.5,-13),
@@ -442,37 +379,58 @@ local CloseBtn = N("TextButton",{BackgroundColor3=C.card2,BorderSizePixel=0,
 -- ============================================================
 -- SIDEBAR
 -- ============================================================
-local Side = N("Frame",{BackgroundColor3=C.sidebar,BorderSizePixel=0,
-    Size=UDim2.new(0,SIDE,1,-TOP),Position=UDim2.fromOffset(0,TOP)},Main)
+local Side = N("Frame",{
+    BackgroundColor3=C.sidebar,BorderSizePixel=0,
+    Size=UDim2.new(0,SIDE,1,-TOP),
+    Position=UDim2.fromOffset(0,TOP),
+},Main)
 N("Frame",{BackgroundColor3=C.border,BorderSizePixel=0,
     Size=UDim2.new(0,1,1,0),Position=UDim2.new(1,0,0,0)},Side)
 
 local TopAv = N("ImageLabel",{BackgroundColor3=C.card3,BorderSizePixel=0,
     Size=UDim2.fromOffset(30,30),Position=UDim2.fromOffset((SIDE-30)/2,9),Image=""},Side)
 Cr(TopAv,8)
-task.spawn(function() pcall(function()
-    TopAv.Image = Players:GetUserThumbnailAsync(LP.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
-end) end)
-
-local NavCont = N("Frame",{BackgroundTransparency=1,Size=UDim2.new(1,0,1,-100),Position=UDim2.fromOffset(0,48)},Side)
-N("UIListLayout",{FillDirection=Enum.FillDirection.Vertical,Padding=UDim.new(0,3),
-    SortOrder=Enum.SortOrder.LayoutOrder,HorizontalAlignment=Enum.HorizontalAlignment.Center},NavCont)
-N("UIPadding",{PaddingTop=UDim.new(0,4)},NavCont)
-
-local DSide = N("TextButton",{BackgroundColor3=Color3.fromRGB(80,60,162),BorderSizePixel=0,
-    Text="◉",TextColor3=C.white,TextSize=13,Font=Enum.Font.GothamBold,
-    Size=UDim2.fromOffset(34,34),Position=UDim2.new(0.5,-17,1,-48),AutoButtonColor=false},Side); Cr(DSide,8)
-DSide.Activated:Connect(function()
-    pcall(function() if setclipboard then setclipboard("https://discord.gg/nullstate") end end)
-    Toast("Discord copied!", C.accent)
+task.spawn(function()
+    pcall(function()
+        TopAv.Image = Players:GetUserThumbnailAsync(LP.UserId,
+            Enum.ThumbnailType.HeadShot,Enum.ThumbnailSize.Size100x100)
+    end)
 end)
 
-local Cont = N("Frame",{BackgroundTransparency=1,
-    Size=UDim2.fromOffset(CONT, H-TOP),Position=UDim2.fromOffset(SIDE,TOP),ClipsDescendants=true},Main)
+local NavCont = N("Frame",{
+    BackgroundTransparency=1,
+    Size=UDim2.new(1,0,1,-100),
+    Position=UDim2.fromOffset(0,48),
+},Side)
+N("UIListLayout",{
+    FillDirection=Enum.FillDirection.Vertical,
+    Padding=UDim.new(0,3),
+    SortOrder=Enum.SortOrder.LayoutOrder,
+    HorizontalAlignment=Enum.HorizontalAlignment.Center,
+},NavCont)
+N("UIPadding",{PaddingTop=UDim.new(0,4)},NavCont)
+
+local DSide = N("TextButton",{
+    BackgroundColor3=Color3.fromRGB(80,60,162),BorderSizePixel=0,
+    Text="◉",TextColor3=C.white,TextSize=13,Font=Enum.Font.GothamBold,
+    Size=UDim2.fromOffset(34,34),Position=UDim2.new(0.5,-17,1,-48),
+    AutoButtonColor=false},Side); Cr(DSide,8)
+DSide.Activated:Connect(function()
+    pcall(function() if setclipboard then setclipboard("https://discord.gg/nullstate") end end)
+    Toast("Discord invite copied!", C.accent)
+end)
+
+local Cont = N("Frame",{
+    BackgroundTransparency=1,
+    Size=UDim2.fromOffset(CONT, H-TOP),
+    Position=UDim2.fromOffset(SIDE,TOP),
+    ClipsDescendants=true,
+},Main)
 
 local Pages={}
 local function MkPage(name)
-    local p=N("Frame",{Name=name,BackgroundTransparency=1,Size=UDim2.fromScale(1,1),Visible=false,ClipsDescendants=true},Cont)
+    local p=N("Frame",{Name=name,BackgroundTransparency=1,
+        Size=UDim2.fromScale(1,1),Visible=false,ClipsDescendants=true},Cont)
     Pages[name]=p; return p
 end
 local PHome     = MkPage("Home")
@@ -480,334 +438,11 @@ local PCombat   = MkPage("Combat")
 local PTarget   = MkPage("Target")
 local PFriends  = MkPage("Friends")
 local PVisuals  = MkPage("Visuals")
-local PBinds    = MkPage("Binds")
 local PMobile   = MkPage("Mobile")
-local PHelp     = MkPage("Help")
 local PSettings = MkPage("Settings")
 
 -- ============================================================
--- INFO OVERLAY
--- ============================================================
-local InfoOverlay = N("Frame",{
-    BackgroundColor3=C.black,BorderSizePixel=0,
-    BackgroundTransparency=1,
-    Size=UDim2.fromScale(1,1),
-    Visible=false,ZIndex=500,
-},Screen)
-
-local InfoPanel = N("Frame",{
-    BackgroundColor3=C.card,BorderSizePixel=0,
-    Size=UDim2.new(0.7,0,0,0),
-    Position=UDim2.fromScale(0.5,0.5),
-    AnchorPoint=Vector2.new(0.5,0.5),
-    ZIndex=501, ClipsDescendants=true,
-},InfoOverlay)
-Cr(InfoPanel,12); Sk(InfoPanel,C.accent,1,0)
-local infoTitle = Lbl(InfoPanel,"Info",12,C.text,Enum.Font.GothamBold)
-infoTitle.Position=UDim2.fromOffset(14,12); infoTitle.Size=UDim2.new(1,-40,0,20)
-local infoClose = N("TextButton",{BackgroundColor3=C.card3,BorderSizePixel=0,
-    Text="×",TextColor3=C.sub,TextSize=14,Font=Enum.Font.GothamMedium,
-    Size=UDim2.fromOffset(24,24),Position=UDim2.new(1,-32,0,10),AutoButtonColor=false},InfoPanel); Cr(infoClose,6)
-local infoBody = Lbl(InfoPanel,"",10,C.sub)
-infoBody.Position=UDim2.fromOffset(14,40); infoBody.Size=UDim2.new(1,-28,1,-52)
-infoBody.TextYAlignment=Enum.TextYAlignment.Top
-
-local function ShowInfo(title, body)
-    infoTitle.Text = title or "Info"
-    infoBody.Text = body or ""
-    local sz = math.clamp(20 + #body / 2.2 + 60, 180, 460)
-    InfoPanel.Size = UDim2.new(0.7,0,0,0)
-    InfoPanel.Visible = true
-    Tw(InfoPanel,{Size=UDim2.new(0.7,0,0,sz)},.22)
-    InfoOverlay.Visible = true
-    Tw(InfoOverlay,{BackgroundTransparency=0.55},.18)
-end
-local function HideInfo()
-    Tw(InfoOverlay,{BackgroundTransparency=1},.18)
-    Tw(InfoPanel,{Size=UDim2.new(0.7,0,0,0)},.18)
-    task.delay(.2, function() InfoOverlay.Visible=false end)
-end
-infoClose.Activated:Connect(HideInfo)
-InfoOverlay.InputBegan:Connect(function(inp)
-    if inp.UserInputType == Enum.UserInputType.MouseButton1
-    or inp.UserInputType == Enum.UserInputType.Touch then
-        HideInfo()
-    end
-end)
-
-local function InfoBtn(parent, key, title)
-    local b = N("TextButton",{
-        BackgroundColor3=C.card3,BorderSizePixel=0,
-        Text="?",TextColor3=C.sub,TextSize=9,Font=Enum.Font.GothamBold,
-        Size=UDim2.fromOffset(18,18),AutoButtonColor=false,
-    },parent); Cr(b,9); Sk(b,C.border,1,0.5)
-    b.Activated:Connect(function()
-        ShowInfo(title or key, GetHelp(key))
-    end)
-    return b
-end
-
--- ============================================================
--- ADVANCED HSV COLOR PICKER
--- ============================================================
--- Opens as an overlay. Gives hue strip + SV square + hex + RGB + presets.
-
-local pickerOpen = false
-local pickerTarget = nil     -- S table key
-local pickerOnChange = nil   -- callback
-
-local PickerOverlay = N("Frame",{
-    BackgroundColor3=C.black,BorderSizePixel=0,BackgroundTransparency=1,
-    Size=UDim2.fromScale(1,1),Visible=false,ZIndex=510,
-},Screen)
-
-local PickerPanel = N("Frame",{
-    BackgroundColor3=C.card,BorderSizePixel=0,
-    Size=UDim2.fromOffset(340,320),
-    Position=UDim2.fromScale(0.5,0.5),
-    AnchorPoint=Vector2.new(0.5,0.5),
-    ZIndex=511, ClipsDescendants=false,
-},PickerOverlay)
-Cr(PickerPanel,12); Sk(PickerPanel,C.accent,1,0)
-local pTitle = Lbl(PickerPanel,"Pick a color",12,C.text,Enum.Font.GothamBold)
-pTitle.Position=UDim2.fromOffset(14,10); pTitle.Size=UDim2.new(1,-40,0,20)
-local pClose = N("TextButton",{BackgroundColor3=C.card3,BorderSizePixel=0,
-    Text="×",TextColor3=C.sub,TextSize=14,Font=Enum.Font.GothamMedium,
-    Size=UDim2.fromOffset(24,24),Position=UDim2.new(1,-32,0,8),AutoButtonColor=false},PickerPanel); Cr(pClose,6)
-
--- SV Square
-local svFrame = N("Frame",{
-    BackgroundColor3=Color3.fromRGB(255,0,0),BorderSizePixel=0,
-    Size=UDim2.fromOffset(200,200),
-    Position=UDim2.fromOffset(14,42),
-    ClipsDescendants=true,
-},PickerPanel)
-Cr(svFrame,8)
--- white -> transparent horizontal (saturation)
-local satGrad = N("UIGradient",{
-    Color=ColorSequence.new{
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(255,255,255)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(255,255,255)),
-    },
-    Transparency=NumberSequence.new{
-        NumberSequenceKeypoint.new(0, 0),
-        NumberSequenceKeypoint.new(1, 1),
-    },
-    Rotation=0,
-},svFrame)
--- black overlay vertical (value)
-local valOverlay = N("Frame",{
-    BackgroundColor3=C.black,BorderSizePixel=0,
-    Size=UDim2.fromScale(1,1),
-},svFrame)
-N("UIGradient",{
-    Transparency=NumberSequence.new{
-        NumberSequenceKeypoint.new(0, 1),
-        NumberSequenceKeypoint.new(1, 0),
-    },
-    Rotation=90,
-},valOverlay)
--- SV cursor
-local svCursor = N("Frame",{
-    BackgroundColor3=C.white,BorderSizePixel=0,
-    Size=UDim2.fromOffset(14,14),
-    AnchorPoint=Vector2.new(0.5,0.5),
-    Position=UDim2.fromScale(0.5,0.5),
-    ZIndex=2,
-},svFrame); Cr(svCursor,7)
-local svCursorStroke = Sk(svCursor, C.black, 2, 0)
-
--- Hue strip
-local hueFrame = N("Frame",{
-    BackgroundColor3=Color3.fromRGB(255,255,255),BorderSizePixel=0,
-    Size=UDim2.fromOffset(28,200),
-    Position=UDim2.fromOffset(224,42),
-    ClipsDescendants=true,
-},PickerPanel)
-Cr(hueFrame,8)
-local hueGrad = N("UIGradient",{
-    Color=ColorSequence.new{
-        ColorSequenceKeypoint.new(0.000, Color3.fromRGB(255,0,0)),
-        ColorSequenceKeypoint.new(0.166, Color3.fromRGB(255,255,0)),
-        ColorSequenceKeypoint.new(0.333, Color3.fromRGB(0,255,0)),
-        ColorSequenceKeypoint.new(0.500, Color3.fromRGB(0,255,255)),
-        ColorSequenceKeypoint.new(0.666, Color3.fromRGB(0,0,255)),
-        ColorSequenceKeypoint.new(0.833, Color3.fromRGB(255,0,255)),
-        ColorSequenceKeypoint.new(1.000, Color3.fromRGB(255,0,0)),
-    },
-    Rotation=90,
-},hueFrame)
--- hue cursor
-local hueCursor = N("Frame",{
-    BackgroundColor3=C.white,BorderSizePixel=0,
-    Size=UDim2.new(1,4,0,4),
-    AnchorPoint=Vector2.new(0.5,0.5),
-    Position=UDim2.new(0.5,0,0,0),
-    ZIndex=2,
-},hueFrame); Cr(hueCursor,2)
-Sk(hueCursor,C.black,1.5,0)
-
--- Preview + hex + rgb
-local preview = N("Frame",{
-    BackgroundColor3=Color3.fromRGB(255,0,0),BorderSizePixel=0,
-    Size=UDim2.fromOffset(60,28),
-    Position=UDim2.fromOffset(14,254),
-},PickerPanel); Cr(preview,6); Sk(preview,C.border,1,0)
-
-local hexBox = N("TextBox",{
-    BackgroundColor3=C.card3,BorderSizePixel=0,
-    Text="#FF0000",TextColor3=C.text,TextSize=10,
-    Font=Enum.Font.Code, ClearTextOnFocus=false,
-    Size=UDim2.fromOffset(110,28),
-    Position=UDim2.fromOffset(84,254),
-    TextXAlignment=Enum.TextXAlignment.Center,
-},PickerPanel); Cr(hexBox,6); Sk(hexBox,C.border,1,0)
-
-local rgbLbl = Lbl(PickerPanel,"rgb(255,0,0)",9,C.sub,Enum.Font.Code)
-rgbLbl.Position=UDim2.fromOffset(204,254); rgbLbl.Size=UDim2.fromOffset(120,28)
-
--- preset row
-local presetRow = N("Frame",{
-    BackgroundTransparency=1,
-    Size=UDim2.new(1,-28,0,26),
-    Position=UDim2.fromOffset(14,286),
-},PickerPanel)
-N("UIListLayout",{FillDirection=Enum.FillDirection.Horizontal,Padding=UDim.new(0,4)},presetRow)
-
--- cancel / apply
-local btnRow = N("Frame",{
-    BackgroundTransparency=1,
-    Size=UDim2.new(1,-28,0,28),
-    Position=UDim2.new(0,14,1,-36),
-},PickerPanel)
-N("UIListLayout",{FillDirection=Enum.FillDirection.Horizontal,Padding=UDim.new(0,6),
-    HorizontalAlignment=Enum.HorizontalAlignment.Right},btnRow)
-
--- current picker HSV state
-local pH,pS,pV = 0,1,1
-local pLive = Color3.fromRGB(255,0,0)
-
-local function PickerRefreshVisual()
-    local hueColor = HSVToColor(pH, 1, 1)
-    svFrame.BackgroundColor3 = hueColor
-    svCursor.Position = UDim2.fromScale(pS, 1 - pV)
-    hueCursor.Position = UDim2.new(0.5, 0, pH, 0)
-    pLive = HSVToColor(pH, pS, pV)
-    preview.BackgroundColor3 = pLive
-    hexBox.Text = ColorToHex(pLive)
-    rgbLbl.Text = string.format("rgb(%d,%d,%d)",
-        math.floor(pLive.R*255+.5), math.floor(pLive.G*255+.5), math.floor(pLive.B*255+.5))
-end
-
-local function PickerSetFromColor(c)
-    local h,s,v = ColorToHSV(c)
-    pH, pS, pV = h, s, v
-    PickerRefreshVisual()
-end
-
--- SV drag
-local svDrag = false
-local function svFromPos(x, y)
-    local rel = Vector2.new(
-        math.clamp((x - svFrame.AbsolutePosition.X) / svFrame.AbsoluteSize.X, 0, 1),
-        math.clamp((y - svFrame.AbsolutePosition.Y) / svFrame.AbsoluteSize.Y, 0, 1)
-    )
-    pS = rel.X
-    pV = 1 - rel.Y
-    PickerRefreshVisual()
-    if pickerOnChange then pickerOnChange(pLive) end
-end
-N("TextButton",{BackgroundTransparency=1,Text="",Size=UDim2.fromScale(1,1),ZIndex=3},svFrame).InputBegan:Connect(function(inp)
-    if inp.UserInputType==Enum.UserInputType.MouseButton1 or inp.UserInputType==Enum.UserInputType.Touch then
-        svDrag = true; svFromPos(inp.Position.X, inp.Position.Y)
-    end
-end)
-
--- Hue drag
-local hueDrag = false
-local function hueFromY(y)
-    local rel = math.clamp((y - hueFrame.AbsolutePosition.Y) / hueFrame.AbsoluteSize.Y, 0, 1)
-    pH = rel
-    PickerRefreshVisual()
-    if pickerOnChange then pickerOnChange(pLive) end
-end
-N("TextButton",{BackgroundTransparency=1,Text="",Size=UDim2.fromScale(1,1),ZIndex=3},hueFrame).InputBegan:Connect(function(inp)
-    if inp.UserInputType==Enum.UserInputType.MouseButton1 or inp.UserInputType==Enum.UserInputType.Touch then
-        hueDrag = true; hueFromY(inp.Position.Y)
-    end
-end)
-
-Track(UIS.InputChanged:Connect(function(inp)
-    if not (svDrag or hueDrag) then return end
-    if inp.UserInputType==Enum.UserInputType.MouseMovement or inp.UserInputType==Enum.UserInputType.Touch then
-        if svDrag then svFromPos(inp.Position.X, inp.Position.Y)
-        elseif hueDrag then hueFromY(inp.Position.Y) end
-    end
-end))
-Track(UIS.InputEnded:Connect(function(inp)
-    if inp.UserInputType==Enum.UserInputType.MouseButton1 or inp.UserInputType==Enum.UserInputType.Touch then
-        svDrag=false; hueDrag=false
-    end
-end))
-
--- Hex input
-hexBox.FocusLost:Connect(function()
-    local c = HexToColor(hexBox.Text)
-    if c then
-        PickerSetFromColor(c)
-        if pickerOnChange then pickerOnChange(pLive) end
-    else
-        hexBox.Text = ColorToHex(pLive)
-    end
-end)
-
--- Presets
-for _, col in ipairs(PRESET_COLORS) do
-    local f = N("TextButton",{BackgroundColor3=col,BorderSizePixel=0,Text="",
-        Size=UDim2.fromOffset(20,20),AutoButtonColor=false},presetRow)
-    Cr(f,4); Sk(f,C.border,1,0.4)
-    f.Activated:Connect(function()
-        PickerSetFromColor(col)
-        if pickerOnChange then pickerOnChange(pLive) end
-    end)
-end
-
-local function PickerOpen(title, initialColor, targetKey, onChange)
-    pTitle.Text = title or "Pick a color"
-    pickerTarget = targetKey
-    pickerOnChange = onChange
-    PickerSetFromColor(initialColor or Color3.fromRGB(255,255,255))
-    pickerOpen = true
-    PickerOverlay.Visible = true
-    PickerPanel.Size = UDim2.fromOffset(0,0)
-    Tw(PickerOverlay,{BackgroundTransparency=0.55},.18)
-    Tw(PickerPanel,{Size=UDim2.fromOffset(340,320)},.22)
-end
-local function PickerClose()
-    pickerOpen = false
-    Tw(PickerOverlay,{BackgroundTransparency=1},.18)
-    Tw(PickerPanel,{Size=UDim2.fromOffset(0,0)},.18)
-    task.delay(.2,function() PickerOverlay.Visible=false end)
-end
-
-local applyBtn = N("TextButton",{BackgroundColor3=C.accent,BorderSizePixel=0,
-    Text="Apply",TextColor3=C.white,TextSize=10,Font=Enum.Font.GothamBold,
-    Size=UDim2.fromOffset(80,28),AutoButtonColor=false},btnRow); Cr(applyBtn,6)
-local cancelBtn = N("TextButton",{BackgroundColor3=C.card3,BorderSizePixel=0,
-    Text="Cancel",TextColor3=C.sub,TextSize=10,Font=Enum.Font.GothamBold,
-    Size=UDim2.fromOffset(80,28),AutoButtonColor=false},btnRow); Cr(cancelBtn,6)
-pClose.Activated:Connect(PickerClose)
-cancelBtn.Activated:Connect(PickerClose)
-applyBtn.Activated:Connect(function()
-    if pickerTarget and S[pickerTarget] ~= nil then
-        S[pickerTarget] = pLive
-    end
-    Toast("Color applied: "..ColorToHex(pLive), C.green)
-    PickerClose()
-end)
-
--- ============================================================
--- WIDGETS
+-- WIDGET SYSTEM
 -- ============================================================
 local function Scroll(page)
     local s=N("ScrollingFrame",{
@@ -815,19 +450,27 @@ local function Scroll(page)
         Size=UDim2.fromScale(1,1),
         CanvasSize=UDim2.new(0,0,0,0),
         AutomaticCanvasSize=Enum.AutomaticSize.Y,
-        ScrollBarThickness=4, ScrollBarImageColor3=C.accent,
+        ScrollBarThickness=4,
+        ScrollBarImageColor3=C.accent,
         ScrollingDirection=Enum.ScrollingDirection.Y,
         ElasticBehavior=Enum.ElasticBehavior.WhenScrollable,
     },page)
-    N("UIPadding",{PaddingLeft=UDim.new(0,PAD),PaddingRight=UDim.new(0,PAD),
-        PaddingTop=UDim.new(0,10),PaddingBottom=UDim.new(0,20)},s)
-    N("UIListLayout",{FillDirection=Enum.FillDirection.Vertical,Padding=UDim.new(0,6),SortOrder=Enum.SortOrder.LayoutOrder},s)
+    N("UIPadding",{
+        PaddingLeft=UDim.new(0,PAD),PaddingRight=UDim.new(0,PAD),
+        PaddingTop=UDim.new(0,10),PaddingBottom=UDim.new(0,20),
+    },s)
+    N("UIListLayout",{
+        FillDirection=Enum.FillDirection.Vertical,
+        Padding=UDim.new(0,6),
+        SortOrder=Enum.SortOrder.LayoutOrder,
+    },s)
     local order = 0
     return s, function() order += 1; return order end
 end
 
 local function Sec(scr, nextOrder, label)
-    local f=N("Frame",{BackgroundTransparency=1,Size=UDim2.new(1,0,0,18),LayoutOrder=nextOrder()},scr)
+    local f=N("Frame",{BackgroundTransparency=1,
+        Size=UDim2.new(1,0,0,18),LayoutOrder=nextOrder()},scr)
     local dot=N("Frame",{BackgroundColor3=C.accent,BorderSizePixel=0,
         Size=UDim2.fromOffset(6,6),Position=UDim2.fromOffset(0,6)},f); Cr(dot,3)
     local l=Lbl(f,label,8,C.sub,Enum.Font.GothamBold)
@@ -835,26 +478,21 @@ local function Sec(scr, nextOrder, label)
     return f, dot
 end
 
--- Toggle row with optional info
-local function TogRow(scr, nextOrder, title, sub, init, key, infoKey)
+local function TogRow(scr, nextOrder, title, sub, init, key)
     local h = sub and 66 or 50
     local row=N("Frame",{BackgroundColor3=C.card,BorderSizePixel=0,
         Size=UDim2.new(1,0,0,h),LayoutOrder=nextOrder()},scr)
     Cr(row,8); Sk(row,C.border)
 
-    local hasInfo = infoKey and true or false
     local tl=Lbl(row,title,10,C.text,Enum.Font.GothamMedium)
     tl.Position=UDim2.fromOffset(12, sub and 10 or 0)
-    tl.Size=UDim2.new(1,-140,0,22)
+    tl.Size=UDim2.new(1,-100,0,22)
     tl.TextTruncate=Enum.TextTruncate.AtEnd
     if sub then
         local sl=Lbl(row,sub,8,C.sub)
-        sl.Position=UDim2.fromOffset(12,30); sl.Size=UDim2.new(1,-140,0,32)
+        sl.Position=UDim2.fromOffset(12,30)
+        sl.Size=UDim2.new(1,-100,0,32)
         sl.TextYAlignment=Enum.TextYAlignment.Top
-    end
-    if hasInfo then
-        local ib = InfoBtn(row, infoKey, title)
-        ib.Position = UDim2.new(1,-86, sub and 12 or 0.5,-9)
     end
 
     local TW,TH=50,26
@@ -865,13 +503,14 @@ local function TogRow(scr, nextOrder, title, sub, init, key, infoKey)
     },row); Cr(bg,TH)
     local knob=N("Frame",{BackgroundColor3=C.white,BorderSizePixel=0,
         Size=UDim2.fromOffset(20,20),
-        Position=init and UDim2.fromOffset(27,3) or UDim2.fromOffset(3,3)},bg); Cr(knob,10)
+        Position=init and UDim2.fromOffset(27,3) or UDim2.fromOffset(3,3),
+    },bg); Cr(knob,10)
 
     local on = init == true
     local function Rnd(v)
         Tw(bg,{BackgroundColor3=v and C.accent or C.card3},.14)
         Tw(knob,{Position=v and UDim2.fromOffset(27,3) or UDim2.fromOffset(3,3)},.14)
-        if key and S[key] ~= nil then S[key] = v end
+        if S[key] ~= nil then S[key] = v end
     end
     local btn=N("TextButton",{BackgroundTransparency=1,Text="",
         Size=UDim2.fromScale(1,1),ZIndex=bg.ZIndex+1},bg)
@@ -879,18 +518,15 @@ local function TogRow(scr, nextOrder, title, sub, init, key, infoKey)
     return row, {Set=function(_,v) on=v;Rnd(v) end, Get=function() return on end}
 end
 
-local function PillRow(scr, nextOrder, title, opts, def, key, onChange, infoKey)
+local function PillRow(scr, nextOrder, title, opts, def, key, onChange)
     local row=N("Frame",{BackgroundColor3=C.card,BorderSizePixel=0,
         Size=UDim2.new(1,0,0,58),LayoutOrder=nextOrder()},scr)
     Cr(row,8); Sk(row,C.border)
-    local tl=Lbl(row,title,10,C.text,Enum.Font.GothamMedium)
-    tl.Position=UDim2.fromOffset(12,4); tl.Size=UDim2.new(1,-60,0,20)
-    if infoKey then
-        local ib = InfoBtn(row, infoKey, title)
-        ib.Position = UDim2.new(1,-30,0,4)
-    end
 
-    local totalW = CONT - PAD*2 - 24 - (infoKey and 22 or 0)
+    local tl=Lbl(row,title,10,C.text,Enum.Font.GothamMedium)
+    tl.Position=UDim2.fromOffset(12,4); tl.Size=UDim2.new(1,-16,0,20)
+
+    local totalW = CONT - PAD*2 - 24
     local pW = math.floor((totalW-(#opts-1)*4)/#opts)
     pW = math.clamp(pW, 40, 140)
 
@@ -918,87 +554,64 @@ local function PillRow(scr, nextOrder, title, opts, def, key, onChange, infoKey)
         Cr(b,6); table.insert(bs,b)
         b.Activated:Connect(function() cur = opt; Upd() end)
     end
-    return row, {Set=function(_,v) cur=v;Upd() end, Get=function() return cur end}
+    return row, {Set=function(_,v) cur=v;Upd() end}
 end
 
--- KEYBIND ROW — click the badge, press any key, it binds
-local bindingUI = { active=false, cb=nil, badge=nil }
-Track(UIS.InputBegan:Connect(function(inp, gp)
-    if not bindingUI.active then return end
-    if gp then return end
-    if inp.UserInputType ~= Enum.UserInputType.Keyboard then return end
-    local kc = inp.KeyCode
-    if kc == Enum.KeyCode.Unknown then return end
-    bindingUI.active = false
-    if bindingUI.badge then
-        bindingUI.badge.Text = kc.Name
-        Tw(bindingUI.badge, {BackgroundColor3 = C.adk}, .12)
-    end
-    if bindingUI.cb then bindingUI.cb(kc) end
-end))
-
-local function BindRow(scr, nextOrder, title, bindKey, infoKey)
+local function KeyRow(scr, nextOrder, title, current, onBind)
     local row=N("Frame",{BackgroundColor3=C.card,BorderSizePixel=0,
         Size=UDim2.new(1,0,0,48),LayoutOrder=nextOrder()},scr)
     Cr(row,8); Sk(row,C.border)
     local tl=Lbl(row,title,10,C.text,Enum.Font.GothamMedium)
-    tl.Position=UDim2.fromOffset(12,0); tl.Size=UDim2.new(1,-160,1,0)
-    if infoKey then
-        local ib = InfoBtn(row, infoKey, title)
-        ib.Position = UDim2.new(1,-130,0.5,-9)
-    end
+    tl.Position=UDim2.fromOffset(12,0); tl.Size=UDim2.new(1,-100,1,0)
 
-    local badge = N("TextButton",{
-        BackgroundColor3=C.adk,BorderSizePixel=0,
-        Text=(S.binds[bindKey] and S.binds[bindKey].Name) or "—",
-        TextColor3=C.white,TextSize=9,Font=Enum.Font.GothamBold,
-        Size=UDim2.fromOffset(96,26),
-        Position=UDim2.new(1,-106,0.5,-13),
-        AutoButtonColor=false,
-    },row); Cr(badge,6)
-    badge.Activated:Connect(function()
-        if bindingUI.active then return end
-        bindingUI.active = true
-        bindingUI.cb = function(kc)
-            S.binds[bindKey] = kc
-            Toast(title.." bound to "..kc.Name, C.accent)
-        end
-        bindingUI.badge = badge
-        badge.Text = "press…"
-        Tw(badge,{BackgroundColor3=C.accent},.12)
+    local kbg=N("TextButton",{BackgroundColor3=C.adk,BorderSizePixel=0,
+        Text="",Size=UDim2.fromOffset(82,28),
+        Position=UDim2.new(1,-92,0.5,-14),AutoButtonColor=false},row)
+    Cr(kbg,6)
+    local kl=Lbl(kbg, current and current.Name or "···",9,C.white,
+        Enum.Font.GothamBold,Enum.TextXAlignment.Center)
+    kl.Size=UDim2.fromScale(1,1); kl.TextXAlignment=Enum.TextXAlignment.Center
+
+    local binding = false
+    kbg.Activated:Connect(function()
+        if binding then return end
+        binding = true
+        kl.Text = "press…"
+        kbg.BackgroundColor3 = C.accent
     end)
-    local clr = N("TextButton",{
-        BackgroundColor3=C.card3,BorderSizePixel=0,
-        Text="×",TextColor3=C.sub,TextSize=10,Font=Enum.Font.GothamBold,
-        Size=UDim2.fromOffset(20,20),
-        Position=UDim2.new(1,-26,0.5,-10),
-        AutoButtonColor=false,
-    },row); Cr(clr,4)
-    clr.Activated:Connect(function()
-        S.binds[bindKey] = nil
-        badge.Text = "—"
-    end)
-    return row
+
+    Track(UIS.InputBegan:Connect(function(inp, gp)
+        if not binding then return end
+        if gp then return end
+        if inp.UserInputType ~= Enum.UserInputType.Keyboard then return end
+        binding = false
+        kbg.BackgroundColor3 = C.adk
+        kl.Text = inp.KeyCode.Name
+        if onBind then onBind(inp.KeyCode) end
+    end))
+
+    return row, {Set=function(_,kc) kl.Text = kc.Name end}
 end
 
--- Slider with info
-local function SliderRow(scr, nextOrder, title, min, max, def, key, isInt, fmt, infoKey)
+local function SliderRow(scr, nextOrder, title, min, max, def, key, isInt, fmt)
     local row=N("Frame",{BackgroundColor3=C.card,BorderSizePixel=0,
         Size=UDim2.new(1,0,0,54),LayoutOrder=nextOrder()},scr)
     Cr(row,8); Sk(row,C.border)
+
     local tl=Lbl(row,title,10,C.text,Enum.Font.GothamMedium)
-    tl.Position=UDim2.fromOffset(12,4); tl.Size=UDim2.new(1,-116,0,18)
+    tl.Position=UDim2.fromOffset(12,4); tl.Size=UDim2.new(1,-90,0,18)
+
     local valLbl=Lbl(row,"",9,C.accent,Enum.Font.GothamBold,Enum.TextXAlignment.Right)
-    valLbl.Position=UDim2.new(1,-106,0,4); valLbl.Size=UDim2.fromOffset(64,18)
-    if infoKey then
-        local ib = InfoBtn(row, infoKey, title)
-        ib.Position = UDim2.new(1,-30,0,4)
-    end
+    valLbl.Position=UDim2.new(1,-80,0,4); valLbl.Size=UDim2.fromOffset(68,18)
 
     local bg=N("Frame",{BackgroundColor3=C.card3,BorderSizePixel=0,
         Size=UDim2.new(1,-24,0,8),Position=UDim2.fromOffset(12,34)},row)
     Cr(bg,4)
-    local fill=N("Frame",{BackgroundColor3=C.accent,BorderSizePixel=0,Size=UDim2.fromScale(0,1)},bg); Cr(fill,4)
+
+    local fill=N("Frame",{BackgroundColor3=C.accent,BorderSizePixel=0,
+        Size=UDim2.fromScale(0,1)},bg)
+    Cr(fill,4)
+
     local knob=N("Frame",{BackgroundColor3=C.white,BorderSizePixel=0,
         Size=UDim2.fromOffset(14,14),AnchorPoint=Vector2.new(.5,.5),
         Position=UDim2.fromScale(0,.5),ZIndex=bg.ZIndex+1},bg)
@@ -1033,7 +646,8 @@ local function SliderRow(scr, nextOrder, title, min, max, def, key, isInt, fmt, 
     grab.InputBegan:Connect(function(inp)
         if inp.UserInputType == Enum.UserInputType.MouseButton1
         or inp.UserInputType == Enum.UserInputType.Touch then
-            dragging = true; setFromX(inp.Position.X)
+            dragging = true
+            setFromX(inp.Position.X)
         end
     end)
     Track(UIS.InputChanged:Connect(function(inp)
@@ -1049,10 +663,42 @@ local function SliderRow(scr, nextOrder, title, min, max, def, key, isInt, fmt, 
             dragging = false
         end
     end))
+
     return row, {Set=function(_,v) Rnd(v) end, Get=function() return cur end}
 end
 
--- Button row
+local function SwatchRow(scr, nextOrder, title, colors, def, key)
+    local cols=4; local sw=26; local gap=6
+    local rowsN=math.ceil(#colors/cols)
+    local rh = 22 + rowsN*(sw+gap) + 8
+    local row=N("Frame",{BackgroundColor3=C.card,BorderSizePixel=0,
+        Size=UDim2.new(1,0,0,rh),LayoutOrder=nextOrder()},scr)
+    Cr(row,8); Sk(row,C.border)
+    local tl=Lbl(row,title,10,C.text,Enum.Font.GothamMedium)
+    tl.Position=UDim2.fromOffset(12,4); tl.Size=UDim2.new(1,-16,0,18)
+    local sel = def; local all = {}
+    for i, col in ipairs(colors) do
+        local cx=(i-1)%cols; local cy=math.floor((i-1)/cols)
+        local f=N("Frame",{BackgroundColor3=col,BorderSizePixel=0,
+            Size=UDim2.fromOffset(sw,sw),
+            Position=UDim2.fromOffset(12+cx*(sw+gap), 26+cy*(sw+gap))},row)
+        Cr(f,5)
+        local st=N("UIStroke",{Color=C.white,Thickness=2,
+            Transparency=col==def and 0.1 or 0.9},f)
+        local btn=N("TextButton",{BackgroundTransparency=1,Text="",
+            Size=UDim2.fromScale(1,1),ZIndex=f.ZIndex+1},f)
+        table.insert(all,{st=st,col=col})
+        btn.Activated:Connect(function()
+            sel = col
+            for _, s in ipairs(all) do
+                Tw(s.st,{Transparency=s.col==col and 0.1 or 0.9},.1)
+            end
+            if key and S[key] ~= nil then S[key] = col end
+        end)
+    end
+    return row
+end
+
 local function BtnRow(scr, nextOrder, text, color, cb)
     local b = N("TextButton",{BackgroundColor3=C.card,BorderSizePixel=0,
         Text=text,TextColor3=color or C.text,TextSize=10,
@@ -1063,87 +709,73 @@ local function BtnRow(scr, nextOrder, text, color, cb)
     return b
 end
 
--- Color swatch row — tap opens HSV picker
-local function ColorRow(scr, nextOrder, title, def, key, infoKey)
-    local row=N("Frame",{BackgroundColor3=C.card,BorderSizePixel=0,
-        Size=UDim2.new(1,0,0,54),LayoutOrder=nextOrder()},scr)
-    Cr(row,8); Sk(row,C.border)
-    local tl=Lbl(row,title,10,C.text,Enum.Font.GothamMedium)
-    tl.Position=UDim2.fromOffset(12,4); tl.Size=UDim2.new(1,-116,0,18)
-    if infoKey then
-        local ib = InfoBtn(row, infoKey, title)
-        ib.Position = UDim2.new(1,-30,0,4)
-    end
-
-    local sw = N("TextButton",{
-        BackgroundColor3 = def, BorderSizePixel=0, Text="",
-        Size=UDim2.new(1,-24,0,26), Position=UDim2.fromOffset(12,22),
-        AutoButtonColor=false,
-    },row); Cr(sw,6); Sk(sw,C.border,1,0)
-    local hexLbl = Lbl(sw, ColorToHex(def), 9, C.white, Enum.Font.Code, Enum.TextXAlignment.Center)
-    hexLbl.Size = UDim2.fromScale(1,1)
-    hexLbl.TextXAlignment = Enum.TextXAlignment.Center
-    -- contrast text
-    local lum = def.R*0.299 + def.G*0.587 + def.B*0.114
-    hexLbl.TextColor3 = lum > 0.6 and C.black or C.white
-
-    sw.Activated:Connect(function()
-        PickerOpen(title, S[key] or def, key, function(live)
-            sw.BackgroundColor3 = live
-            hexLbl.Text = ColorToHex(live)
-            local l2 = live.R*0.299 + live.G*0.587 + live.B*0.114
-            hexLbl.TextColor3 = l2 > 0.6 and C.black or C.white
-        end)
-    end)
-    return row
-end
-
 -- ============================================================
 -- HOME
 -- ============================================================
 local HScr, hNext = Scroll(PHome)
+
 local WCard=N("Frame",{BackgroundColor3=C.card,BorderSizePixel=0,
     Size=UDim2.new(1,0,0,84),LayoutOrder=hNext()},HScr)
 Cr(WCard,10); Sk(WCard,C.border)
+
 local WAv=N("ImageLabel",{BackgroundColor3=C.card3,BorderSizePixel=0,
     Size=UDim2.fromOffset(50,50),Position=UDim2.fromOffset(10,17),Image=""},WCard)
 Cr(WAv,8)
-task.spawn(function() pcall(function()
-    WAv.Image = Players:GetUserThumbnailAsync(LP.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
-end) end)
+task.spawn(function()
+    pcall(function()
+        WAv.Image = Players:GetUserThumbnailAsync(LP.UserId,
+            Enum.ThumbnailType.HeadShot,Enum.ThumbnailSize.Size100x100)
+    end)
+end)
+
 local WName=Lbl(WCard,"Welcome back, "..LP.DisplayName,12,C.text,Enum.Font.GothamBold)
 WName.Position=UDim2.fromOffset(70,12); WName.Size=UDim2.new(1,-78,0,18)
 WName.TextTruncate=Enum.TextTruncate.AtEnd
 local WUser=Lbl(WCard,"@"..LP.Name,8,C.sub)
 WUser.Position=UDim2.fromOffset(70,30); WUser.Size=UDim2.new(1,-78,0,14)
+WUser.TextTruncate=Enum.TextTruncate.AtEnd
 local PingLine=Lbl(WCard,"",8,C.sub)
 PingLine.Position=UDim2.fromOffset(70,46); PingLine.Size=UDim2.new(1,-78,0,14)
+PingLine.TextTruncate=Enum.TextTruncate.AtEnd
 local JobLine=Lbl(WCard,"Job: "..game.JobId:sub(1,14).."…",8,C.sub)
 JobLine.Position=UDim2.fromOffset(70,60); JobLine.Size=UDim2.new(1,-78,0,14)
+JobLine.TextTruncate=Enum.TextTruncate.AtEnd
 
 local SCard=N("Frame",{BackgroundColor3=C.card,BorderSizePixel=0,
     Size=UDim2.new(1,0,0,68),LayoutOrder=hNext()},HScr)
 Cr(SCard,10); Sk(SCard,C.border)
+
 local SThumb=N("ImageLabel",{BackgroundColor3=C.card3,BorderSizePixel=0,
-    Size=UDim2.fromOffset(52,52),Position=UDim2.fromOffset(8,8),Image=""},SCard); Cr(SThumb,6)
+    Size=UDim2.fromOffset(52,52),Position=UDim2.fromOffset(8,8),Image=""},SCard)
+Cr(SThumb,6)
 local SName=Lbl(SCard,"Loading…",10,C.text,Enum.Font.GothamBold)
 SName.Position=UDim2.fromOffset(68,6); SName.Size=UDim2.new(1,-76,0,17)
-task.spawn(function() pcall(function()
-    local info = MPS:GetProductInfo(game.PlaceId)
-    SName.Text = info.Name
-    if info.Icon then SThumb.Image = "rbxassetid://"..info.Icon end
-end) end)
+SName.TextTruncate=Enum.TextTruncate.AtEnd
+task.spawn(function()
+    pcall(function()
+        local info = MPS:GetProductInfo(game.PlaceId)
+        SName.Text = info.Name
+        if info.Icon then SThumb.Image = "rbxassetid://"..info.Icon end
+    end)
+end)
+
 local SPlr=Lbl(SCard,"👤 —",8,C.sub)
 SPlr.Position=UDim2.fromOffset(68,26); SPlr.Size=UDim2.new(0.5,-76,0,14)
+SPlr.TextTruncate=Enum.TextTruncate.AtEnd
 local SPing=Lbl(SCard,"📶 — ms",8,C.sub)
 SPing.Position=UDim2.new(0.5,-4,0,26); SPing.Size=UDim2.new(0.5,-8,0,14)
+SPing.TextTruncate=Enum.TextTruncate.AtEnd
 local STime=Lbl(SCard,"🕐 0s on this server",8,C.sub)
 STime.Position=UDim2.fromOffset(68,42); STime.Size=UDim2.new(0.5,-76,0,14)
+STime.TextTruncate=Enum.TextTruncate.AtEnd
 local SJob=Lbl(SCard,"💾 Job "..game.JobId:sub(1,10).."…",8,C.sub)
 SJob.Position=UDim2.new(0.5,-4,0,42); SJob.Size=UDim2.new(0.5,-8,0,14)
+SJob.TextTruncate=Enum.TextTruncate.AtEnd
 
-local ARow=N("Frame",{BackgroundTransparency=1,Size=UDim2.new(1,0,0,52),LayoutOrder=hNext()},HScr)
+local ARow=N("Frame",{BackgroundTransparency=1,
+    Size=UDim2.new(1,0,0,52),LayoutOrder=hNext()},HScr)
 N("UIListLayout",{FillDirection=Enum.FillDirection.Horizontal,Padding=UDim.new(0,6)},ARow)
+
 local function ActCard(par,ico,lbl,sub,cb)
     local bw=math.floor((CONT-PAD*2-12)/3)
     local c=N("TextButton",{BackgroundColor3=C.card,BorderSizePixel=0,
@@ -1156,71 +788,110 @@ local function ActCard(par,ico,lbl,sub,cb)
     tl.TextTruncate=Enum.TextTruncate.AtEnd
     local sl=Lbl(c,sub,7,C.sub)
     sl.Position=UDim2.fromOffset(36,25); sl.Size=UDim2.new(1,-40,0,14)
+    sl.TextTruncate=Enum.TextTruncate.AtEnd
     c.Activated:Connect(function() if cb then cb() end end)
     return c
 end
-ActCard(ARow,"↺","Rejoin","same server",function() pcall(function() TPS:TeleportToPlaceInstance(game.PlaceId, game.JobId, LP) end) end)
-ActCard(ARow,"⇄","Server Hop","find a fresh one",function() pcall(function() TPS:Teleport(game.PlaceId, LP) end) end)
+
+ActCard(ARow,"↺","Rejoin","same server",function()
+    pcall(function() TPS:TeleportToPlaceInstance(game.PlaceId, game.JobId, LP) end)
+end)
+ActCard(ARow,"⇄","Server Hop","find a fresh one",function()
+    pcall(function() TPS:Teleport(game.PlaceId, LP) end)
+end)
 ActCard(ARow,"⎘","Copy Job ID","share server",function()
     pcall(function() if setclipboard then setclipboard(game.JobId) end end)
     Toast("Job ID copied!", C.green)
+end)
+
+local DC=N("Frame",{BackgroundColor3=Color3.fromRGB(56,42,126),BorderSizePixel=0,
+    Size=UDim2.new(1,0,0,54),LayoutOrder=hNext()},HScr)
+Cr(DC,10)
+N("UIGradient",{Color=ColorSequence.new(
+    Color3.fromRGB(70,52,162),Color3.fromRGB(42,31,96)),Rotation=140},DC)
+local DI=Lbl(DC,"◉",18,C.white,Enum.Font.GothamBold,Enum.TextXAlignment.Center)
+DI.Size=UDim2.fromOffset(44,54)
+local DT=Lbl(DC,"Join the HanamiHub Discord",10,C.white,Enum.Font.GothamBold)
+DT.Position=UDim2.fromOffset(50,5); DT.Size=UDim2.new(1,-176,0,17)
+DT.TextTruncate=Enum.TextTruncate.AtEnd
+local DS=Lbl(DC,"updates first, new games, bug reports",8,Color3.fromRGB(172,162,208))
+DS.Position=UDim2.fromOffset(50,24); DS.Size=UDim2.new(1,-176,0,26)
+local CB=N("TextButton",{BackgroundColor3=Color3.fromRGB(82,62,162),BorderSizePixel=0,
+    Text="◉ Copy invite",TextColor3=C.white,TextSize=9,Font=Enum.Font.GothamBold,
+    Size=UDim2.fromOffset(106,30),Position=UDim2.new(1,-116,0.5,-15),
+    AutoButtonColor=false},DC); Cr(CB,8)
+CB.Activated:Connect(function()
+    pcall(function() if setclipboard then setclipboard("https://discord.gg/nullstate") end end)
+    Toast("Discord invite copied!", C.accent)
 end)
 
 -- ============================================================
 -- COMBAT
 -- ============================================================
 local CScr, cNext = Scroll(PCombat)
+
 Sec(CScr,cNext,"AIMBOT")
-TogRow(CScr,cNext,"Enabled","camera lock while the aim key is held",S.aim,"aim","aim")
-TogRow(CScr,cNext,"Hold Key Only","off = aims constantly",S.holdOnly,"holdOnly","holdOnly")
-PillRow(CScr,cNext,"Aim Mode",{"Camera","Silent"},S.aimMode,"aimMode",nil,"aimMode")
+TogRow(CScr,cNext,"Enabled","camera lock while the aim key is held",S.aim,"aim")
+KeyRow(CScr,cNext,"Aim Key", S.aimKey, function(kc)
+    S.aimKey = kc
+    Toast("Aim key set to "..kc.Name, C.accent)
+end)
+TogRow(CScr,cNext,"Hold Key Only","off = aims constantly while aimbot is enabled",S.holdOnly,"holdOnly")
+PillRow(CScr,cNext,"Aim Mode",{"Camera","Silent"},"Camera","aimMode")
 
 Sec(CScr,cNext,"TRIGGERBOT")
-TogRow(CScr,cNext,"Enabled","auto-fire when crosshair is on target",S.trigger,"trigger","trigger")
-SliderRow(CScr,cNext,"Fire Delay",0,250,S.trigDelay,"trigDelay",true,function(v) return math.floor(v).."ms" end,"trigDelay")
-TogRow(CScr,cNext,"Require Aim Held","only fire while aim key held",S.trigHold,"trigHold","trigHold")
-TogRow(CScr,cNext,"Team Check",nil,S.trigTeam,"trigTeam","team")
+TogRow(CScr,cNext,"Enabled","auto-fire when crosshair is on target",S.trigger,"trigger")
+SliderRow(CScr,cNext,"Fire Delay",0,250,S.trigDelay,"trigDelay",true,function(v) return math.floor(v).."ms" end)
+TogRow(CScr,cNext,"Require Aim Held","only fire while aim key is held",S.trigHold,"trigHold")
+TogRow(CScr,cNext,"Team Check",nil,S.trigTeam,"trigTeam")
 
 Sec(CScr,cNext,"PREDICTION")
-TogRow(CScr,cNext,"Velocity Lead","aim ahead of moving targets",S.predOn,"predOn","predOn")
-SliderRow(CScr,cNext,"Lead Amount",0.0,0.5,S.predLead,"predLead",false,function(v) return string.format("%.2f",v) end,"predLead")
+TogRow(CScr,cNext,"Velocity Lead","aim ahead of moving targets",S.predOn,"predOn")
+SliderRow(CScr,cNext,"Lead Amount",0.0,0.5,S.predLead,"predLead",false,function(v) return string.format("%.2f",v) end)
 
-Sec(CScr,cNext,"RECOIL / HITBOX")
-TogRow(CScr,cNext,"No Recoil","cancel camera kick",S.noRecoil,"noRecoil","noRecoil")
-TogRow(CScr,cNext,"Expand Hitbox","client-side size boost",S.hbExpand,"hbExpand","hbExpand")
-SliderRow(CScr,cNext,"Hitbox Size",2,10,S.hbSize,"hbSize",false,function(v) return string.format("%.1f",v).." st" end,"hbExpand")
+Sec(CScr,cNext,"RECOIL")
+TogRow(CScr,cNext,"No Recoil","hook camera recoil if available",S.noRecoil,"noRecoil")
 
-Sec(CScr,cNext,"COLORS")
-ColorRow(CScr,cNext,"Aim Color",S.aimColor,"aimColor","aim")
+Sec(CScr,cNext,"HITBOX")
+TogRow(CScr,cNext,"Expand Hitbox","client-side size boost while aiming",S.hbExpand,"hbExpand")
+SliderRow(CScr,cNext,"Size (studs)",2,10,S.hbSize,"hbSize",false,function(v) return string.format("%.1f",v) end)
+
+Sec(CScr,cNext,"MOBILE AIM BUTTON")
+PillRow(CScr,cNext,"Button Mode",{"Hold","Toggle"},S.mobileBtnMode,"mobileBtnMode")
+PillRow(CScr,cNext,"Button Side",{"Right","Left"},S.mobileBtnSide,"mobileBtnSide")
+SliderRow(CScr,cNext,"Button Size",44,110,S.mobileBtnSize,"mobileBtnSize",true,function(v) return math.floor(v).."px" end)
 
 -- ============================================================
 -- TARGET
 -- ============================================================
 local TScr, tNext = Scroll(PTarget)
 Sec(TScr,tNext,"FOV")
-SliderRow(TScr,tNext,"FOV Radius",30,600,S.fov,"fov",true,function(v) return math.floor(v).."px" end,"fov")
-PillRow(TScr,tNext,"FOV Shape",{"Circle","Square","Cone"},S.fovShape,"fovShape",nil,"fovShape")
-SliderRow(TScr,tNext,"Smoothness",0.05,1.0,S.smooth,"smooth",false,function(v) return string.format("%.2f",v) end,"smooth")
-PillRow(TScr,tNext,"Smooth Curve",{"Linear","EaseIn","EaseOut","SCurve"},S.smoothCurve,"smoothCurve",nil,"smoothCurve")
-SliderRow(TScr,tNext,"Max Distance",100,5000,S.dist,"dist",true,function(v) return math.floor(v).."m" end,"dist")
+SliderRow(TScr,tNext,"FOV Radius",30,600,S.fov,"fov",true,function(v) return math.floor(v).."px" end)
+PillRow(TScr,tNext,"FOV Shape",{"Circle","Square","Cone"},S.fovShape,"fovShape")
+SliderRow(TScr,tNext,"Smoothness",0.05,1.0,S.smooth,"smooth",false,function(v) return string.format("%.2f",v) end)
+PillRow(TScr,tNext,"Smooth Curve",{"Linear","EaseIn","EaseOut","SCurve"},S.smoothCurve,"smoothCurve")
+SliderRow(TScr,tNext,"Max Distance",100,5000,S.dist,"dist",true,function(v) return math.floor(v).."m" end)
 
 Sec(TScr,tNext,"PRIORITY")
-PillRow(TScr,tNext,"Target Priority",{"Crosshair","Closest","LowestHP","Threat"},S.targetPriority,"targetPriority",nil,"targetPriority")
-TogRow(TScr,tNext,"Sticky Lock","stay on one target",S.stickyLock,"stickyLock","stickyLock")
-SliderRow(TScr,tNext,"Sticky Duration",0.1,3.0,S.stickyTime,"stickyTime",false,function(v) return string.format("%.1f",v).."s" end,"stickyTime")
+PillRow(TScr,tNext,"Target Priority",{"Crosshair","Closest","LowestHP","Threat"},S.targetPriority,"targetPriority")
+TogRow(TScr,tNext,"Sticky Lock","stay on target once locked",S.stickyLock,"stickyLock")
+SliderRow(TScr,tNext,"Sticky Duration",0.1,3.0,S.stickyTime,"stickyTime",false,function(v) return string.format("%.1f",v).."s" end)
 
 Sec(TScr,tNext,"PART / FILTERS")
-PillRow(TScr,tNext,"Target Part",{"Head","HumanoidRootPart","UpperTorso","LowerTorso"},S.hitboxPart,"hitboxPart",nil,"hitboxPart")
-TogRow(TScr,tNext,"Team Check","ignore teammates",S.team,"team","team")
-TogRow(TScr,tNext,"Alive Check","ignore dead players",S.alive,"alive","alive")
-TogRow(TScr,tNext,"Wall Check","only visible enemies",S.wall,"wall","wall")
+PillRow(TScr,tNext,"Target Part",{"Head","HumanoidRootPart","UpperTorso","LowerTorso"},S.hitboxPart,"hitboxPart")
+TogRow(TScr,tNext,"Team Check","ignore teammates",S.team,"team")
+TogRow(TScr,tNext,"Alive Check","ignore dead players",S.alive,"alive")
+TogRow(TScr,tNext,"Wall Check","only target visible enemies",S.wall,"wall")
 
 Sec(TScr,tNext,"HUMAN AIM")
-TogRow(TScr,tNext,"Micro Jitter","tiny aim wobble",S.humanJitter,"humanJitter","humanJitter")
-SliderRow(TScr,tNext,"Jitter Amount",0.0,1.5,S.humanJitterAmp,"humanJitterAmp",false,function(v) return string.format("%.2f",v) end,"humanJitter")
-TogRow(TScr,tNext,"Reaction Delay","pause before engaging",S.humanDelay,"humanDelay","humanDelay")
-SliderRow(TScr,tNext,"Delay Min",0,300,S.humanDelayMin,"humanDelayMin",true,function(v) return math.floor(v).."ms" end,"humanDelay")
-SliderRow(TScr,tNext,"Delay Max",0,500,S.humanDelayMax,"humanDelayMax",true,function(v) return math.floor(v).."ms" end,"humanDelay")
+TogRow(TScr,tNext,"Micro Jitter","adds tiny aim wobble",S.humanJitter,"humanJitter")
+SliderRow(TScr,tNext,"Jitter Amount",0.0,1.5,S.humanJitterAmp,"humanJitterAmp",false,function(v) return string.format("%.2f",v) end)
+TogRow(TScr,tNext,"Reaction Delay","pause before engaging",S.humanDelay,"humanDelay")
+SliderRow(TScr,tNext,"Delay Min",0,300,S.humanDelayMin,"humanDelayMin",true,function(v) return math.floor(v).."ms" end)
+SliderRow(TScr,tNext,"Delay Max",0,500,S.humanDelayMax,"humanDelayMax",true,function(v) return math.floor(v).."ms" end)
+
+Sec(TScr,tNext,"COLORS")
+SwatchRow(TScr,tNext,"Aim Color",COLORS,S.aimColor,"aimColor")
 
 -- ============================================================
 -- FRIENDS
@@ -1229,14 +900,13 @@ local FScr, fNext = Scroll(PFriends)
 local FA=N("Frame",{BackgroundColor3=C.card,BorderSizePixel=0,
     Size=UDim2.new(1,0,0,44),LayoutOrder=fNext()},FScr)
 Cr(FA,8); Sk(FA,C.border)
-local fal=Lbl(FA,"Tap a player to cycle: normal → friend → blacklist → watch.",9,C.text)
-fal.Position=UDim2.fromOffset(12,0); fal.Size=UDim2.new(1,-40,1,0)
-local faInfo = InfoBtn(FA,"friends","Friends list")
-faInfo.Position=UDim2.new(1,-26,0.5,-9)
+local fal=Lbl(FA,"Tap a player to cycle: normal → friend (green) → blacklist (red) → watch (yellow).",9,C.text)
+fal.Position=UDim2.fromOffset(12,0); fal.Size=UDim2.new(1,-16,1,0)
 
 Sec(FScr,fNext,"PLAYERS IN THIS SERVER")
 local FList=N("Frame",{BackgroundTransparency=1,
-    Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,LayoutOrder=fNext()},FScr)
+    Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,
+    LayoutOrder=fNext()},FScr)
 N("UIListLayout",{Padding=UDim.new(0,4),SortOrder=Enum.SortOrder.LayoutOrder},FList)
 
 local thumbCache = {}
@@ -1244,11 +914,13 @@ local function GetThumb(uid)
     if thumbCache[uid] then return thumbCache[uid] end
     local img
     pcall(function()
-        img = Players:GetUserThumbnailAsync(uid, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+        img = Players:GetUserThumbnailAsync(uid,
+            Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
     end)
     thumbCache[uid] = img
     return img
 end
+
 local function GetList(plr)
     if S.friends[plr.Name] then return "friend" end
     if S.blacklist[plr.Name] then return "blacklist" end
@@ -1256,36 +928,53 @@ local function GetList(plr)
     return "normal"
 end
 local function SetList(plr, state)
-    S.friends[plr.Name]=nil; S.blacklist[plr.Name]=nil; S.watchlist[plr.Name]=nil
-    if state=="friend" then S.friends[plr.Name]=true end
-    if state=="blacklist" then S.blacklist[plr.Name]=true end
-    if state=="watch" then S.watchlist[plr.Name]=true end
+    S.friends[plr.Name] = nil
+    S.blacklist[plr.Name] = nil
+    S.watchlist[plr.Name] = nil
+    if state == "friend" then S.friends[plr.Name] = true end
+    if state == "blacklist" then S.blacklist[plr.Name] = true end
+    if state == "watch" then S.watchlist[plr.Name] = true end
 end
 
 local function BuildFriends()
-    for _,ch in ipairs(FList:GetChildren()) do if ch:IsA("Frame") then ch:Destroy() end end
+    for _,ch in ipairs(FList:GetChildren()) do
+        if ch:IsA("Frame") then ch:Destroy() end
+    end
     for _,plr in ipairs(Players:GetPlayers()) do
-        local row=N("Frame",{BackgroundColor3=C.card,BorderSizePixel=0,Size=UDim2.new(1,0,0,46)},FList)
+        local row=N("Frame",{BackgroundColor3=C.card,BorderSizePixel=0,
+            Size=UDim2.new(1,0,0,46)},FList)
         Cr(row,8); local sk = Sk(row,C.border)
         local st = GetList(plr)
-        if st=="friend" then sk.Color=C.green; sk.Transparency=0.2
-        elseif st=="blacklist" then sk.Color=C.red; sk.Transparency=0.2
-        elseif st=="watch" then sk.Color=C.yellow; sk.Transparency=0.2 end
+        if st == "friend" then sk.Color = C.green; sk.Transparency = 0.2
+        elseif st == "blacklist" then sk.Color = C.red; sk.Transparency = 0.2
+        elseif st == "watch" then sk.Color = C.yellow; sk.Transparency = 0.2 end
+
         local av=N("ImageLabel",{BackgroundColor3=C.card3,BorderSizePixel=0,
-            Size=UDim2.fromOffset(32,32),Position=UDim2.fromOffset(7,7),Image=""},row); Cr(av,16)
-        task.spawn(function() local img=GetThumb(plr.UserId); if img then av.Image=img end end)
+            Size=UDim2.fromOffset(32,32),Position=UDim2.fromOffset(7,7),Image=""},row)
+        Cr(av,16)
+        task.spawn(function()
+            local img = GetThumb(plr.UserId)
+            if img then av.Image = img end
+        end)
+
         local nl=Lbl(row,plr.DisplayName,10,C.text,Enum.Font.GothamMedium)
         nl.Position=UDim2.fromOffset(48,7); nl.Size=UDim2.new(1,-58,0,16)
+        nl.TextTruncate=Enum.TextTruncate.AtEnd
         local ul=Lbl(row,"@"..plr.Name.."  ·  "..st,8,C.sub)
         ul.Position=UDim2.fromOffset(48,25); ul.Size=UDim2.new(1,-58,0,12)
+        ul.TextTruncate=Enum.TextTruncate.AtEnd
+
         local btn=N("TextButton",{BackgroundTransparency=1,Text="",
             Size=UDim2.fromScale(1,1),ZIndex=row.ZIndex+1},row)
         btn.Activated:Connect(function()
-            local cur=GetList(plr); local nxt="friend"
-            if cur=="friend" then nxt="blacklist"
-            elseif cur=="blacklist" then nxt="watch"
-            elseif cur=="watch" then nxt="normal" end
-            SetList(plr,nxt); SaveFriends(); BuildFriends()
+            local cur = GetList(plr)
+            local nxt = "friend"
+            if cur == "friend" then nxt = "blacklist"
+            elseif cur == "blacklist" then nxt = "watch"
+            elseif cur == "watch" then nxt = "normal" end
+            SetList(plr, nxt)
+            SaveFriends()
+            BuildFriends()
         end)
     end
 end
@@ -1298,235 +987,163 @@ Track(Players.PlayerRemoving:Connect(function() task.wait(0.2); BuildFriends() e
 -- ============================================================
 local VScr, vNext = Scroll(PVisuals)
 Sec(VScr,vNext,"PLAYER ESP")
-TogRow(VScr,vNext,"Enabled","master switch",S.esp,"esp","esp")
-TogRow(VScr,vNext,"Names",nil,S.names,"names","names")
-TogRow(VScr,vNext,"Distance",nil,S.distEsp,"distEsp","distEsp")
-TogRow(VScr,vNext,"Health Text",nil,S.hpEsp,"hpEsp","hpEsp")
-TogRow(VScr,vNext,"Health Bar",nil,S.hpBar,"hpBar","hpBar")
-TogRow(VScr,vNext,"Tracers",nil,S.tracers,"tracers","tracers")
-TogRow(VScr,vNext,"Team Color",nil,S.espTeamColor,"espTeamColor","espTeamColor")
-TogRow(VScr,vNext,"Distance Fade",nil,S.distFade,"distFade","distFade")
+TogRow(VScr,vNext,"Enabled","master switch",S.esp,"esp")
+TogRow(VScr,vNext,"Names",nil,S.names,"names")
+TogRow(VScr,vNext,"Distance",nil,S.distEsp,"distEsp")
+TogRow(VScr,vNext,"Health Text",nil,S.hpEsp,"hpEsp")
+TogRow(VScr,vNext,"Health Bar",nil,S.hpBar,"hpBar")
+TogRow(VScr,vNext,"Tracers",nil,S.tracers,"tracers")
+TogRow(VScr,vNext,"Team Color","color by team if available",S.espTeamColor,"espTeamColor")
+TogRow(VScr,vNext,"Distance Fade","hue shifts with distance",S.distFade,"distFade")
 
 Sec(VScr,vNext,"HIGHLIGHT / CHAMS")
-PillRow(VScr,vNext,"Box Style",{"Box","Corners","None"},S.boxStyle,"boxStyle",nil,"boxStyle")
-TogRow(VScr,vNext,"Glow Highlight",nil,S.glowOn,"glowOn","glowOn")
-TogRow(VScr,vNext,"Chams","material swap",S.chams,"chams","chams")
-ColorRow(VScr,vNext,"Chams Color",S.chamsColor,"chamsColor","chams")
+PillRow(VScr,vNext,"Box Style",{"Box","Corners","None"},S.boxStyle,"boxStyle")
+TogRow(VScr,vNext,"Glow Highlight",nil,S.glowOn,"glowOn")
+TogRow(VScr,vNext,"Chams","material swap",S.chams,"chams")
+SwatchRow(VScr,vNext,"Chams Color",COLORS,S.chamsColor,"chamsColor")
 
 Sec(VScr,vNext,"SKELETON")
-TogRow(VScr,vNext,"Skeleton ESP","joint lines",S.skeleton,"skeleton","skeleton")
-ColorRow(VScr,vNext,"Skeleton Color",S.skeletonColor,"skeletonColor","skeleton")
+TogRow(VScr,vNext,"Skeleton ESP","joint lines",S.skeleton,"skeleton")
+SwatchRow(VScr,vNext,"Skeleton Color",COLORS,S.skeletonColor,"skeletonColor")
 
 Sec(VScr,vNext,"2D BOX")
-TogRow(VScr,vNext,"Box ESP","projected corners",S.boxEsp,"boxEsp","boxEsp")
-ColorRow(VScr,vNext,"Box Color",S.boxColor,"boxColor","boxEsp")
+TogRow(VScr,vNext,"Box ESP","projected corners",S.boxEsp,"boxEsp")
+SwatchRow(VScr,vNext,"Box Color",COLORS,S.boxColor,"boxColor")
 
 Sec(VScr,vNext,"RANGE / OPACITY")
-SliderRow(VScr,vNext,"ESP Distance",200,5000,S.espDist,"espDist",true,function(v) return math.floor(v).."m" end,"espDist")
-SliderRow(VScr,vNext,"ESP Fill Opacity",0.0,0.9,S.espFill,"espFill",false,function(v) return string.format("%.2f",v) end,"espFill")
-SliderRow(VScr,vNext,"ESP Outline",0.0,1.0,S.espOutline,"espOutline",false,function(v) return string.format("%.2f",v) end,"espOutline")
-ColorRow(VScr,vNext,"ESP Color",S.espColor,"espColor","esp")
+SliderRow(VScr,vNext,"ESP Distance",200,5000,S.espDist,"espDist",true,function(v) return math.floor(v).."m" end)
+SliderRow(VScr,vNext,"ESP Fill Opacity",0.0,0.9,S.espFill,"espFill",false,function(v) return string.format("%.2f",v) end)
+SliderRow(VScr,vNext,"ESP Outline",0.0,1.0,S.espOutline,"espOutline",false,function(v) return string.format("%.2f",v) end)
+SwatchRow(VScr,vNext,"ESP Color",COLORS,S.espColor,"espColor")
 
 Sec(VScr,vNext,"CROSSHAIR")
-TogRow(VScr,vNext,"Centre Dot",nil,S.crossDot,"crossDot","crossDot")
-ColorRow(VScr,vNext,"Crosshair Color",S.crossColor,"crossColor","crossDot")
+TogRow(VScr,vNext,"Centre Dot",nil,S.crossDot,"crossDot")
+SwatchRow(VScr,vNext,"Crosshair Color",COLORS,S.crossColor,"crossColor")
 
 Sec(VScr,vNext,"TARGET HUD")
-TogRow(VScr,vNext,"Enabled","info panel for target",S.targetHud,"targetHud","targetHud")
-PillRow(VScr,vNext,"Position",{"TopLeft","TopRight","BottomLeft","BottomRight"},S.targetHudPos,"targetHudPos",nil,"targetHudPos")
+TogRow(VScr,vNext,"Enabled","shows info for current target",S.targetHud,"targetHud")
+PillRow(VScr,vNext,"Position",{"TopLeft","TopRight","BottomLeft","BottomRight"},S.targetHudPos,"targetHudPos")
 
 Sec(VScr,vNext,"WATERMARK")
-TogRow(VScr,vNext,"Show Watermark",nil,S.watermark,"watermark","watermark")
-TogRow(VScr,vNext,"Show FPS",nil,S.showFps,"showFps","showFps")
-TogRow(VScr,vNext,"Show Ping",nil,S.showPing,"showPing","showPing")
-
--- ============================================================
--- BINDS PAGE
--- ============================================================
-local BScr, bNext = Scroll(PBinds)
-local bInfo = N("Frame",{BackgroundColor3=C.card,BorderSizePixel=0,
-    Size=UDim2.new(1,0,0,54),LayoutOrder=bNext()},BScr)
-Cr(bInfo,8); Sk(bInfo,C.border)
-local bil = Lbl(bInfo,"Tap a bind badge, then press any key. Press × to clear. On mobile, these binds also power the on-screen Key Cluster.",9,C.text)
-bil.Position=UDim2.fromOffset(12,0); bil.Size=UDim2.new(1,-24,1,0)
-
-Sec(BScr,bNext,"KEYBINDS")
-BindRow(BScr,bNext,"Menu Toggle",   "keyMenu",    "keyMenu")
-BindRow(BScr,bNext,"Aim (hold)",    "keyAim",     "keyAim")
-BindRow(BScr,bNext,"Trigger (hold)","keyTrigger", "keyTrigger")
-BindRow(BScr,bNext,"Toggle ESP",    "keyEsp",     "keyEsp")
-BindRow(BScr,bNext,"Toggle Skeleton","keySkeleton","keySkeleton")
-BindRow(BScr,bNext,"Toggle Chams",  "keyChams",   "keyChams")
-BindRow(BScr,bNext,"Panic (kill all)","keyPanic", "keyPanic")
-
-Sec(BScr,bNext,"NOTES")
-local bNote = N("Frame",{BackgroundColor3=C.card,BorderSizePixel=0,
-    Size=UDim2.new(1,0,0,80),LayoutOrder=bNext()},BScr)
-Cr(bNote,8); Sk(bNote,C.border)
-local bnl = Lbl(bNote,"Keys that are already bound by the game will still fire — bind to something obscure. Bind rows save automatically when you Save Config. Panic is your emergency stop — put it somewhere you can hit fast.",9,C.sub)
-bnl.Position=UDim2.fromOffset(12,0); bnl.Size=UDim2.new(1,-24,1,0)
+TogRow(VScr,vNext,"Show Watermark",nil,S.watermark,"watermark")
+TogRow(VScr,vNext,"Show FPS",nil,S.showFps,"showFps")
+TogRow(VScr,vNext,"Show Ping",nil,S.showPing,"showPing")
 
 -- ============================================================
 -- MOBILE
 -- ============================================================
 local MScr, mNext = Scroll(PMobile)
 Sec(MScr,mNext,"MOBILE AIM BUTTON")
-TogRow(MScr,mNext,"Show Aim Button","hide or show the floating aim button",S.mobileBtnEnabled,"mobileBtnEnabled","mobileBtnEnabled")
-PillRow(MScr,mNext,"Button Mode",{"Hold","Toggle"},S.mobileBtnMode,"mobileBtnMode",nil,"mobileBtnMode")
-PillRow(MScr,mNext,"Button Side",{"Right","Left"},S.mobileBtnSide,"mobileBtnSide",nil,"mobileBtnSide")
-SliderRow(MScr,mNext,"Button Size",44,110,S.mobileBtnSize,"mobileBtnSize",true,function(v) return math.floor(v).."px" end,"mobileBtnSize")
-SliderRow(MScr,mNext,"Button Opacity",0.2,1.0,S.mobileBtnOpacity,"mobileBtnOpacity",false,function(v) return string.format("%.2f",v) end,"mobileBtnOpacity")
-TogRow(MScr,mNext,"Slide-Up Aim","swipe up from bottom to aim",S.mobSlideAim,"mobSlideAim","mobSlideAim")
+local mobInfo = N("Frame",{BackgroundColor3=C.card,BorderSizePixel=0,
+    Size=UDim2.new(1,0,0,66),LayoutOrder=mNext()},MScr)
+Cr(mobInfo,8); Sk(mobInfo,C.border)
+local mil = Lbl(mobInfo,"Floating aim button. Hold = acts like a keyboard key. Toggle = tap once on, tap again off. Drag button anywhere on screen.",9,C.text)
+mil.Position=UDim2.fromOffset(12,0); mil.Size=UDim2.new(1,-24,1,0)
 
-Sec(MScr,mNext,"KEY CLUSTER")
-TogRow(MScr,mNext,"Show Key Cluster","virtual buttons for your binds",S.mobileKeyCluster,"mobileKeyCluster","mobileKeyCluster")
-local kcInfo = N("Frame",{BackgroundColor3=C.card,BorderSizePixel=0,
-    Size=UDim2.new(1,0,0,80),LayoutOrder=mNext()},MScr)
-Cr(kcInfo,8); Sk(kcInfo,C.border)
-local kil = Lbl(kcInfo,"The Key Cluster puts a small row of buttons on screen for each keybind. Tap once to fire the key. Useful for triggering Panic, ESP toggles, Chams, etc. without opening the menu.",9,C.text)
-kil.Position=UDim2.fromOffset(12,0); kil.Size=UDim2.new(1,-24,1,0)
+PillRow(MScr,mNext,"Button Mode",{"Hold","Toggle"},S.mobileBtnMode,"mobileBtnMode")
+PillRow(MScr,mNext,"Button Side",{"Right","Left"},S.mobileBtnSide,"mobileBtnSide")
+SliderRow(MScr,mNext,"Button Size",44,110,S.mobileBtnSize,"mobileBtnSize",true,function(v) return math.floor(v).."px" end)
+SliderRow(MScr,mNext,"Button Opacity",0.2,1.0,S.mobileBtnOpacity,"mobileBtnOpacity",false,function(v) return string.format("%.2f",v) end)
+TogRow(MScr,mNext,"Slide-Up Aim","swipe up from bottom to aim (alt to button)",S.mobSlideAim,"mobSlideAim")
 
 Sec(MScr,mNext,"QUICK ACTIONS")
 BtnRow(MScr,mNext,"Re-center aim button",C.accent,function()
     S.mobBtnX = 0.85; S.mobBtnY = 0.5
-    if RefreshMobileBtn then RefreshMobileBtn() end
+    RefreshMobileBtn()
     Toast("Aim button re-centered", C.accent)
 end)
-
--- ============================================================
--- HELP PAGE — explains every concept
--- ============================================================
-local HpScr, hpNext = Scroll(PHelp)
-local HELP_SECTIONS = {
-    {"Aimbot", {
-        {"Enabled", HELP.aim},
-        {"Hold Key Only", HELP.holdOnly},
-        {"Aim Mode", HELP.aimMode},
-        {"FOV Radius", HELP.fov},
-        {"FOV Shape", HELP.fovShape},
-        {"Smoothness", HELP.smooth},
-        {"Smooth Curve (SCurve etc.)", HELP.smoothCurve},
-    }},
-    {"Triggerbot", {
-        {"Enabled", HELP.trigger},
-        {"Fire Delay", HELP.trigDelay},
-        {"Require Aim Held", HELP.trigHold},
-    }},
-    {"Targeting", {
-        {"Target Priority", HELP.targetPriority},
-        {"Sticky Lock", HELP.stickyLock},
-        {"Velocity Lead", HELP.predOn},
-        {"Target Part", HELP.hitboxPart},
-    }},
-    {"Human Aim", {
-        {"Micro Jitter", HELP.humanJitter},
-        {"Reaction Delay", HELP.humanDelay},
-    }},
-    {"Visuals", {
-        {"ESP", HELP.esp},
-        {"Box Style", HELP.boxStyle},
-        {"Chams", HELP.chams},
-        {"Skeleton", HELP.skeleton},
-        {"2D Box", HELP.boxEsp},
-        {"Distance Fade", HELP.distFade},
-        {"Target HUD", HELP.targetHud},
-    }},
-    {"Performance", {
-        {"Adaptive ESP", HELP.adaptiveEsp},
-        {"Animations", HELP.animsOn},
-        {"ESP Refresh", HELP.espDist},
-    }},
-    {"Keybinds & H button", {
-        {"Binds", HELP.keyAim},
-        {"Panic", HELP.hbPanic},
-        {"H Floating Button", HELP.hbFloating},
-        {"H Quick Actions", HELP.hbQuickActions},
-    }},
-    {"Mobile", {
-        {"Aim Button", HELP.mobileBtnEnabled},
-        {"Button Mode", HELP.mobileBtnMode},
-        {"Slide Up", HELP.mobSlideAim},
-        {"Key Cluster", HELP.mobileKeyCluster},
-    }},
-    {"Color Picker", {
-        {"HSV Picker", HELP.hsvPicker},
-    }},
-}
-for _, section in ipairs(HELP_SECTIONS) do
-    Sec(HpScr, hpNext, section[1])
-    for _, entry in ipairs(section[2]) do
-        local row = N("Frame",{BackgroundColor3=C.card,BorderSizePixel=0,
-            Size=UDim2.new(1,0,0,74),LayoutOrder=hpNext()},HpScr)
-        Cr(row,8); Sk(row,C.border)
-        local t = Lbl(row, entry[1], 10, C.text, Enum.Font.GothamBold)
-        t.Position=UDim2.fromOffset(12,6); t.Size=UDim2.new(1,-24,0,18)
-        local b = Lbl(row, entry[2], 9, C.sub)
-        b.Position=UDim2.fromOffset(12,26); b.Size=UDim2.new(1,-24,0,44)
-        b.TextYAlignment=Enum.TextYAlignment.Top
-    end
-end
 
 -- ============================================================
 -- SETTINGS
 -- ============================================================
 local SScr, sNext = Scroll(PSettings)
 Sec(SScr,sNext,"THEME")
-local TRow=N("Frame",{BackgroundTransparency=1,Size=UDim2.new(1,0,0,38),LayoutOrder=sNext()},SScr)
+local TRow=N("Frame",{BackgroundTransparency=1,
+    Size=UDim2.new(1,0,0,38),LayoutOrder=sNext()},SScr)
 N("UIListLayout",{FillDirection=Enum.FillDirection.Horizontal,Padding=UDim.new(0,5)},TRow)
+
 local ThBtns={}
 local function ApplyTheme(name)
     local d=THEMES[name]; if not d then return end
     C.accent=d.a; C.adk=d.d
-    for n,b in pairs(ThBtns) do Tw(b,{BackgroundTransparency=n==name and 0 or 0.55},.14) end
+    for n,b in pairs(ThBtns) do
+        Tw(b,{BackgroundTransparency=n==name and 0 or 0.55},.14)
+    end
     Toast("Theme: "..name, C.accent)
 end
-local thNames={}; for n in pairs(THEMES) do table.insert(thNames,n) end; table.sort(thNames)
+
+local thNames={}
+for n in pairs(THEMES) do table.insert(thNames,n) end
+table.sort(thNames)
 local thW=math.floor((CONT-PAD*2-(#thNames-1)*5)/#thNames)
 for _,name in ipairs(thNames) do
-    local b=N("TextButton",{Name=name,BackgroundColor3=THEMES[name].a,BackgroundTransparency=0.55,
-        BorderSizePixel=0,Text=name,TextColor3=C.white,TextSize=8,Font=Enum.Font.GothamBold,
+    local b=N("TextButton",{Name=name,
+        BackgroundColor3=THEMES[name].a,BackgroundTransparency=0.55,
+        BorderSizePixel=0,Text=name,TextColor3=C.white,
+        TextSize=8,Font=Enum.Font.GothamBold,
         AutoButtonColor=false,Size=UDim2.fromOffset(thW,34)},TRow)
     Cr(b,7); ThBtns[name]=b
     b.Activated:Connect(function() ApplyTheme(name) end)
 end
 
 Sec(SScr,sNext,"PERFORMANCE PRESET")
-PillRow(SScr,sNext,"Preset",{"Realistic","Balanced","Simple","Custom"},S.preset,"preset",
+local _, presetRef = PillRow(SScr,sNext,"Preset",
+    {"Realistic","Balanced","Simple","Custom"},S.preset,"preset",
     function(name)
-        if name=="Realistic" then
+        if name == "Realistic" then
             S.espRefresh=30; S.animsOn=true; S.glowOn=true; S.espFill=0.65
             S.humanJitter=true; S.humanDelay=true
-        elseif name=="Balanced" then
+        elseif name == "Balanced" then
             S.espRefresh=20; S.animsOn=true; S.glowOn=true; S.espFill=0.78
-        elseif name=="Simple" then
+        elseif name == "Simple" then
             S.espRefresh=10; S.animsOn=false; S.glowOn=false; S.espFill=0.85
             S.humanJitter=false; S.humanDelay=false
         end
         Toast("Preset: "..name, C.accent)
-    end, nil)
+    end
+)
 
 Sec(SScr,sNext,"FINE TUNE")
-SliderRow(SScr,sNext,"ESP Refresh (Hz)",5,60,S.espRefresh,"espRefresh",true,function(v) return math.floor(v).."Hz" end,"espDist")
-TogRow(SScr,sNext,"Animations","tween transitions",S.animsOn,"animsOn","animsOn")
-TogRow(SScr,sNext,"Adaptive ESP","auto-lower Hz if laggy",S.adaptiveEsp,"adaptiveEsp","adaptiveEsp")
-SliderRow(SScr,sNext,"Min Adaptive Hz",4,30,S.adaptiveMinHz,"adaptiveMinHz",true,function(v) return math.floor(v).."Hz" end,"adaptiveEsp")
-TogRow(SScr,sNext,"Show FOV","visual FOV on screen",S.showFov,"showFov","showFov")
+SliderRow(SScr,sNext,"ESP Refresh (Hz)",5,60,S.espRefresh,"espRefresh",true,function(v) return math.floor(v).."Hz" end)
+TogRow(SScr,sNext,"Animations","tween transitions",S.animsOn,"animsOn")
+TogRow(SScr,sNext,"Adaptive ESP","lower Hz if laggy",S.adaptiveEsp,"adaptiveEsp")
+SliderRow(SScr,sNext,"Min Adaptive Hz",4,30,S.adaptiveMinHz,"adaptiveMinHz",true,function(v) return math.floor(v).."Hz" end)
+TogRow(SScr,sNext,"Show FOV","visual FOV ring on screen",S.showFov,"showFov")
 
-Sec(SScr,sNext,"TARGETING DEFAULTS")
-TogRow(SScr,sNext,"Wall Check",nil,S.wall,"wall","wall")
-TogRow(SScr,sNext,"Alive Check",nil,S.alive,"alive","alive")
-TogRow(SScr,sNext,"Team Check",nil,S.team,"team","team")
+Sec(SScr,sNext,"TARGETING")
+TogRow(SScr,sNext,"Wall Check",nil,S.wall,"wall")
+TogRow(SScr,sNext,"Alive Check",nil,S.alive,"alive")
+TogRow(SScr,sNext,"Team Check",nil,S.team,"team")
 
-Sec(SScr,sNext,"H BUTTON")
-SliderRow(SScr,sNext,"H X (0-1)",0.02,0.98,S.hbX,"hbX",false,function(v) return string.format("%.2f",v) end,"hbFloating")
-SliderRow(SScr,sNext,"H Y (0-1)",0.02,0.98,S.hbY,"hbY",false,function(v) return string.format("%.2f",v) end,"hbFloating")
+Sec(SScr,sNext,"KEYBINDS")
+KeyRow(SScr,sNext,"Menu Toggle", S.keyMenu, function(kc)
+    S.keyMenu = kc; Toast("Menu key: "..kc.Name, C.accent)
+end)
+KeyRow(SScr,sNext,"Toggle ESP", S.keyEsp, function(kc)
+    S.keyEsp = kc; Toast("ESP key: "..kc.Name, C.accent)
+end)
+KeyRow(SScr,sNext,"Panic (kill all)", S.keyPanic, function(kc)
+    S.keyPanic = kc; Toast("Panic key: "..kc.Name, C.accent)
+end)
 
 Sec(SScr,sNext,"PANIC")
-BtnRow(SScr,sNext,"⚡  PANIC — kill every feature",C.red,function() FirePanic() end)
+BtnRow(SScr,sNext,"⚡  PANIC — kill every feature + unhook",C.red,function()
+    S.aim=false; S.trigger=false; S.esp=false; S.skeleton=false
+    S.boxEsp=false; S.chams=false; S.tracers=false; S.hpBar=false
+    S.heldPC=false; S.heldMobile=false
+    for plr in pairs(ESPMap) do pcall(KillESP, plr) end
+    for plr in pairs(SkeletonMap) do pcall(KillSkelly, plr) end
+    for plr in pairs(BoxMap) do pcall(KillBox, plr) end
+    for plr in pairs(ChamsMap) do pcall(KillChams, plr) end
+    if Watermark then Watermark.Visible = false end
+    if TargetHud then TargetHud.Visible = false end
+    Toast("PANIC fired — all features off", C.red)
+end)
 
 Sec(SScr,sNext,"CONFIG SLOTS")
 for _, sname in ipairs({"default","pvp","farm","stealth"}) do
-    local row = N("Frame",{BackgroundTransparency=1,Size=UDim2.new(1,0,0,38),LayoutOrder=sNext()},SScr)
+    local row = N("Frame",{BackgroundTransparency=1,
+        Size=UDim2.new(1,0,0,38),LayoutOrder=sNext()},SScr)
     N("UIListLayout",{FillDirection=Enum.FillDirection.Horizontal,Padding=UDim.new(0,4)},row)
     local nameLbl = Lbl(row,sname,10,C.text,Enum.Font.GothamBold)
     nameLbl.Size=UDim2.fromOffset(70,38)
@@ -1535,21 +1152,25 @@ for _, sname in ipairs({"default","pvp","farm","stealth"}) do
         Text="Save",TextColor3=C.green,TextSize=9,Font=Enum.Font.GothamBold,
         AutoButtonColor=false,Size=UDim2.fromOffset(sw,28)},row)
     Cr(saveB,6); Sk(saveB,C.border)
-    saveB.Activated:Connect(function() SaveConfig(sname); Toast("Saved: "..sname, C.green) end)
+    saveB.Activated:Connect(function()
+        SaveConfig(sname); Toast("Saved slot: "..sname, C.green)
+    end)
     local loadB = N("TextButton",{BackgroundColor3=C.card,BorderSizePixel=0,
         Text="Load",TextColor3=C.accent,TextSize=9,Font=Enum.Font.GothamBold,
         AutoButtonColor=false,Size=UDim2.fromOffset(sw,28)},row)
     Cr(loadB,6); Sk(loadB,C.border)
-    loadB.Activated:Connect(function() LoadConfig(sname); Toast("Loaded: "..sname, C.accent) end)
+    loadB.Activated:Connect(function()
+        LoadConfig(sname); Toast("Loaded slot: "..sname, C.accent)
+    end)
 end
 
 Sec(SScr,sNext,"DANGER ZONE")
 BtnRow(SScr,sNext,"♻  Reset to defaults",C.red,function()
     pcall(function() if delfile and isfile(CfgFile(S.cfgSlot)) then delfile(CfgFile(S.cfgSlot)) end end)
-    Toast("Config wiped", C.red)
+    Toast("Config wiped — rejoin to reset", C.red)
 end)
 BtnRow(SScr,sNext,"🗑  Clear friends + lists",C.red,function()
-    S.friends={}; S.blacklist={}; S.watchlist={}
+    S.friends = {}; S.blacklist = {}; S.watchlist = {}
     SaveFriends(); BuildFriends()
     Toast("Lists cleared", C.red)
 end)
@@ -1563,18 +1184,19 @@ local NAV={
     {name="Target",  icon="⊹", page="Target",   sub="fov, priority, human aim"},
     {name="Friends", icon="♟", page="Friends",  sub="lists: friend / blacklist / watch"},
     {name="Visuals", icon="👁", page="Visuals",  sub="esp, skeleton, chams, hud"},
-    {name="Binds",   icon="⌨", page="Binds",    sub="keybinds for every feature"},
-    {name="Mobile",  icon="📱", page="Mobile",  sub="aim button + key cluster"},
-    {name="Help",    icon="?", page="Help",     sub="what every setting means"},
-    {name="Settings",icon="⚙", page="Settings", sub="themes, config, panic"},
+    {name="Mobile",  icon="📱", page="Mobile",  sub="mobile aim button + gestures"},
+    {name="Settings",icon="⚙", page="Settings", sub="themes, config, keybinds, panic"},
 }
 local NBtns={}
 local SelectPage
+
 SelectPage=function(name)
     S.page=name
     for pn,pg in pairs(Pages) do pg.Visible=(pn==name) end
     for _,td in ipairs(NAV) do
-        if td.page==name then PageTitle.Text=td.name; PageSub.Text=td.sub end
+        if td.page==name then
+            PageTitle.Text=td.name; PageSub.Text=td.sub
+        end
     end
     for tname,btn in pairs(NBtns) do
         local sel=tname==name
@@ -1584,65 +1206,116 @@ SelectPage=function(name)
         if ico then ico.TextColor3=sel and C.accent or C.sub end
     end
 end
-local navBtnH = isMobile and 32 or 34
+
+local navBtnH = isMobile and 34 or 36
 for i,td in ipairs(NAV) do
-    local btn=N("TextButton",{Name=td.name,BackgroundTransparency=1,BorderSizePixel=0,
-        Text="",AutoButtonColor=false,Size=UDim2.fromOffset(SIDE-6,navBtnH),LayoutOrder=i},NavCont)
+    local btn=N("TextButton",{Name=td.name,
+        BackgroundTransparency=1,BorderSizePixel=0,
+        Text="",AutoButtonColor=false,
+        Size=UDim2.fromOffset(SIDE-6,navBtnH),LayoutOrder=i},NavCont)
     Cr(btn,8)
-    local sbg=N("Frame",{Name="SBg",BackgroundColor3=C.accent,BackgroundTransparency=1,
-        BorderSizePixel=0,Size=UDim2.fromScale(1,1)},btn); Cr(sbg,8)
-    local ico=Lbl(btn,td.icon,13,C.sub,Enum.Font.Gotham,Enum.TextXAlignment.Center)
+    local sbg=N("Frame",{Name="SBg",BackgroundColor3=C.accent,
+        BackgroundTransparency=1,BorderSizePixel=0,Size=UDim2.fromScale(1,1)},btn)
+    Cr(sbg,8)
+    local ico=Lbl(btn,td.icon,14,C.sub,Enum.Font.Gotham,Enum.TextXAlignment.Center)
     ico.Name="Ico"; ico.Size=UDim2.fromScale(1,1); ico.TextXAlignment=Enum.TextXAlignment.Center
     btn.Activated:Connect(function() SelectPage(td.page) end)
     NBtns[td.name]=btn
 end
 
 -- ============================================================
--- FOV OVERLAY + CROSSHAIR + WATERMARK + TARGET HUD
+-- FOV OVERLAY
 -- ============================================================
-local FOVCont = N("Frame",{BackgroundTransparency=1,BorderSizePixel=0,
-    Size=UDim2.fromOffset(0,0),Position=UDim2.fromScale(0.5,0.5),
-    AnchorPoint=Vector2.new(0.5,0.5),Visible=false,ZIndex=1},Screen)
-local FOVCircle = N("Frame",{BackgroundTransparency=1,BorderSizePixel=0,
+local FOVCont = N("Frame",{
+    BackgroundTransparency=1,BorderSizePixel=0,
+    Size=UDim2.fromOffset(0,0),
+    Position=UDim2.fromScale(0.5,0.5),
+    AnchorPoint=Vector2.new(0.5,0.5),
+    Visible=false,ZIndex=1,
+},Screen)
+
+local FOVCircle = N("Frame",{
+    BackgroundTransparency=1,BorderSizePixel=0,
     Size=UDim2.fromScale(1,1),Position=UDim2.fromScale(0.5,0.5),
-    AnchorPoint=Vector2.new(0.5,0.5)},FOVCont)
-Cr(FOVCircle,999); local FOVCircleStroke = Sk(FOVCircle,C.accent,1,0.35)
-local FOVSquare = N("Frame",{BackgroundTransparency=1,BorderSizePixel=0,
+    AnchorPoint=Vector2.new(0.5,0.5),
+},FOVCont)
+Cr(FOVCircle,999)
+local FOVCircleStroke = Sk(FOVCircle,C.accent,1,0.35)
+
+local FOVSquare = N("Frame",{
+    BackgroundTransparency=1,BorderSizePixel=0,
     Size=UDim2.fromScale(1,1),Position=UDim2.fromScale(0.5,0.5),
-    AnchorPoint=Vector2.new(0.5,0.5),Visible=false},FOVCont)
+    AnchorPoint=Vector2.new(0.5,0.5),Visible=false,
+},FOVCont)
 local FOVSquareStroke = Sk(FOVSquare,C.accent,1,0.35)
 
-local Cross = N("Frame",{BackgroundColor3=C.white,BorderSizePixel=0,
-    Size=UDim2.fromOffset(4,4),Position=UDim2.fromScale(0.5,0.5),
-    AnchorPoint=Vector2.new(0.5,0.5),ZIndex=2,Visible=false},Screen)
+-- ============================================================
+-- CROSSHAIR
+-- ============================================================
+local Cross = N("Frame",{
+    BackgroundColor3=C.white,BorderSizePixel=0,
+    Size=UDim2.fromOffset(4,4),
+    Position=UDim2.fromScale(0.5,0.5),
+    AnchorPoint=Vector2.new(0.5,0.5),
+    ZIndex=2,Visible=false,
+},Screen)
 Cr(Cross,2)
 
-local Watermark = N("Frame",{BackgroundColor3=C.card,BorderSizePixel=0,
-    BackgroundTransparency=0.35,Size=UDim2.fromOffset(260,22),
-    Position=UDim2.fromOffset(12,12),ZIndex=90,Visible=S.watermark},Screen)
+-- ============================================================
+-- WATERMARK
+-- ============================================================
+local Watermark = N("Frame",{
+    BackgroundColor3=C.card,BorderSizePixel=0,
+    BackgroundTransparency=0.35,
+    Size=UDim2.fromOffset(260,22),
+    Position=UDim2.fromOffset(12,12),
+    ZIndex=90,Visible=S.watermark,
+},Screen)
 Cr(Watermark,6); Sk(Watermark,C.accent,1,0.4)
-local WmLabel = Lbl(Watermark,"hanami v4.0",9,C.text,Enum.Font.GothamBold)
+local WmLabel = Lbl(Watermark,"hanami v3.2.1",9,C.text,Enum.Font.GothamBold)
 WmLabel.Position=UDim2.fromOffset(8,0); WmLabel.Size=UDim2.new(1,-16,1,0)
+WmLabel.TextTruncate=Enum.TextTruncate.AtEnd
 
-local TargetHud = N("Frame",{BackgroundColor3=C.card,BorderSizePixel=0,
-    BackgroundTransparency=0.15,Size=UDim2.fromOffset(200,60),
-    Position=UDim2.fromOffset(12,42),ZIndex=90,Visible=false},Screen)
+-- ============================================================
+-- TARGET HUD
+-- ============================================================
+local TargetHud = N("Frame",{
+    BackgroundColor3=C.card,BorderSizePixel=0,
+    BackgroundTransparency=0.15,
+    Size=UDim2.fromOffset(200,60),
+    Position=UDim2.fromOffset(12,42),
+    ZIndex=90,Visible=false,
+},Screen)
 Cr(TargetHud,8); Sk(TargetHud,C.accent,1,0.3)
 local THName = Lbl(TargetHud,"—",11,C.text,Enum.Font.GothamBold)
 THName.Position=UDim2.fromOffset(10,6); THName.Size=UDim2.new(1,-20,0,18)
+THName.TextTruncate=Enum.TextTruncate.AtEnd
 local THHpBg = N("Frame",{BackgroundColor3=C.card3,BorderSizePixel=0,
-    Size=UDim2.new(1,-20,0,6),Position=UDim2.fromOffset(10,28)},TargetHud); Cr(THHpBg,3)
+    Size=UDim2.new(1,-20,0,6),Position=UDim2.fromOffset(10,28)},TargetHud)
+Cr(THHpBg,3)
 local THHpBar = N("Frame",{BackgroundColor3=C.green,BorderSizePixel=0,
-    Size=UDim2.fromScale(1,1)},THHpBg); Cr(THHpBar,3)
+    Size=UDim2.fromScale(1,1)},THHpBg)
+Cr(THHpBar,3)
 local THInfo = Lbl(TargetHud,"",8,C.sub)
 THInfo.Position=UDim2.fromOffset(10,38); THInfo.Size=UDim2.new(1,-20,0,14)
+THInfo.TextTruncate=Enum.TextTruncate.AtEnd
 
 local function PositionTargetHud()
-    local p=S.targetHudPos; local pad=12
-    if p=="TopLeft" then TargetHud.Position=UDim2.fromOffset(pad,42); TargetHud.AnchorPoint=Vector2.new(0,0)
-    elseif p=="TopRight" then TargetHud.Position=UDim2.new(1,-pad,0,42); TargetHud.AnchorPoint=Vector2.new(1,0)
-    elseif p=="BottomLeft" then TargetHud.Position=UDim2.new(0,pad,1,-pad); TargetHud.AnchorPoint=Vector2.new(0,1)
-    else TargetHud.Position=UDim2.new(1,-pad,1,-pad); TargetHud.AnchorPoint=Vector2.new(1,1) end
+    local pos = S.targetHudPos
+    local pad = 12
+    if pos == "TopLeft" then
+        TargetHud.Position = UDim2.fromOffset(pad, 42)
+        TargetHud.AnchorPoint = Vector2.new(0,0)
+    elseif pos == "TopRight" then
+        TargetHud.Position = UDim2.new(1, -pad, 0, 42)
+        TargetHud.AnchorPoint = Vector2.new(1,0)
+    elseif pos == "BottomLeft" then
+        TargetHud.Position = UDim2.new(0, pad, 1, -pad)
+        TargetHud.AnchorPoint = Vector2.new(0,1)
+    else
+        TargetHud.Position = UDim2.new(1, -pad, 1, -pad)
+        TargetHud.AnchorPoint = Vector2.new(1,1)
+    end
 end
 PositionTargetHud()
 
@@ -1651,11 +1324,13 @@ PositionTargetHud()
 -- ============================================================
 local MobBtn = N("TextButton",{
     BackgroundColor3=C.accent,BorderSizePixel=0,
-    Text="AIM",TextColor3=C.white,TextSize=13,Font=Enum.Font.GothamBold,
-    AutoButtonColor=false,Size=UDim2.fromOffset(S.mobileBtnSize,S.mobileBtnSize),
+    Text="AIM",TextColor3=C.white,TextSize=13,
+    Font=Enum.Font.GothamBold,AutoButtonColor=false,
+    Size=UDim2.fromOffset(S.mobileBtnSize,S.mobileBtnSize),
     ZIndex=50,Visible=false,
 },Screen)
-Cr(MobBtn, S.mobileBtnSize/2); local MobStroke = Sk(MobBtn, C.white, 2, 0.4)
+Cr(MobBtn, S.mobileBtnSize/2)
+local MobStroke = Sk(MobBtn, C.white, 2, 0.4)
 
 function RefreshMobileBtn()
     MobBtn.Size = UDim2.fromOffset(S.mobileBtnSize, S.mobileBtnSize)
@@ -1663,22 +1338,29 @@ function RefreshMobileBtn()
     MobBtn.BackgroundTransparency = 1 - (S.mobileBtnOpacity or 0.75)
     MobBtn.Position = UDim2.new(S.mobBtnX, 0, S.mobBtnY, 0)
     MobBtn.AnchorPoint = Vector2.new(0.5, 0.5)
-    MobBtn.Visible = isMobile and S.mobileBtnEnabled
+    MobBtn.Visible = isMobile
 end
+
 function RefreshAimStates()
     MobBtn.BackgroundColor3 = S.heldMobile and C.red or C.accent
 end
 
+local mobDragStart = 0
 local mobStartPos = nil
+
 MobBtn.InputBegan:Connect(function(inp)
-    if inp.UserInputType==Enum.UserInputType.Touch or inp.UserInputType==Enum.UserInputType.MouseButton1 then
+    if inp.UserInputType == Enum.UserInputType.Touch
+    or inp.UserInputType == Enum.UserInputType.MouseButton1 then
+        mobDragStart = os.clock()
         mobStartPos = inp.Position
     end
 end)
 Track(UIS.InputChanged:Connect(function(inp)
     if not mobStartPos then return end
-    if inp.UserInputType==Enum.UserInputType.Touch or inp.UserInputType==Enum.UserInputType.MouseMovement then
-        if (inp.Position - mobStartPos).Magnitude > 12 then
+    if inp.UserInputType == Enum.UserInputType.Touch
+    or inp.UserInputType == Enum.UserInputType.MouseMovement then
+        local d = (inp.Position - mobStartPos).Magnitude
+        if d > 12 then
             local vp = Camera.ViewportSize
             S.mobBtnX = math.clamp(inp.Position.X / vp.X, 0.05, 0.95)
             S.mobBtnY = math.clamp(inp.Position.Y / vp.Y, 0.05, 0.95)
@@ -1687,273 +1369,52 @@ Track(UIS.InputChanged:Connect(function(inp)
     end
 end))
 MobBtn.InputEnded:Connect(function(inp)
-    if inp.UserInputType==Enum.UserInputType.Touch or inp.UserInputType==Enum.UserInputType.MouseButton1 then
+    if inp.UserInputType == Enum.UserInputType.Touch
+    or inp.UserInputType == Enum.UserInputType.MouseButton1 then
         local dragged = mobStartPos and (inp.Position - mobStartPos).Magnitude > 12
         mobStartPos = nil
         if not dragged then
             if S.mobileBtnMode == "Hold" then
-                S.heldMobile = true; RefreshAimStates()
+                S.heldMobile = true
+                RefreshAimStates()
             else
-                S.heldMobile = not S.heldMobile; RefreshAimStates()
+                S.heldMobile = not S.heldMobile
+                RefreshAimStates()
             end
         end
     end
 end)
 Track(UIS.InputEnded:Connect(function(inp)
     if S.mobileBtnMode == "Hold" and S.heldMobile then
-        if inp.UserInputType==Enum.UserInputType.Touch or inp.UserInputType==Enum.UserInputType.MouseButton1 then
-            S.heldMobile = false; RefreshAimStates()
+        if inp.UserInputType == Enum.UserInputType.Touch
+        or inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            S.heldMobile = false
+            RefreshAimStates()
         end
     end
 end))
 
--- slide-up aim
 local slideStart = nil
 Track(UIS.TouchStarted:Connect(function(t)
     if not S.mobSlideAim then return end
     local vp = Camera.ViewportSize
-    if t.Position.Y > vp.Y*0.8 then slideStart = t.Position end
+    if t.Position.Y > vp.Y * 0.8 then slideStart = t.Position end
 end))
 Track(UIS.TouchMoved:Connect(function(t)
     if not slideStart then return end
-    if slideStart.Y - t.Position.Y > 60 and not S.heldMobile then
-        S.heldMobile = true; RefreshAimStates()
+    local dy = slideStart.Y - t.Position.Y
+    if dy > 60 and not S.heldMobile then
+        S.heldMobile = true
+        RefreshAimStates()
     end
 end))
-Track(UIS.TouchEnded:Connect(function()
+Track(UIS.TouchEnded:Connect(function(t)
     if slideStart then
         slideStart = nil
         if S.mobSlideAim and S.heldMobile then
-            S.heldMobile = false; RefreshAimStates()
+            S.heldMobile = false
+            RefreshAimStates()
         end
-    end
-end))
-
--- ============================================================
--- MOBILE KEY CLUSTER
--- ============================================================
-local KeyCluster = N("Frame",{
-    BackgroundColor3=C.panel,BorderSizePixel=0,BackgroundTransparency=0.15,
-    Size=UDim2.fromOffset(60,0),
-    Position=UDim2.new(1,-72,0.5,0),
-    AnchorPoint=Vector2.new(1,0.5),
-    Visible=false, ZIndex=45,
-},Screen)
-Cr(KeyCluster,10); Sk(KeyCluster,C.accent,1,0.4)
-N("UIListLayout",{FillDirection=Enum.FillDirection.Vertical,Padding=UDim.new(0,4),
-    SortOrder=Enum.SortOrder.LayoutOrder,HorizontalAlignment=Enum.HorizontalAlignment.Center},KeyCluster)
-N("UIPadding",{PaddingTop=UDim.new(0,6),PaddingBottom=UDim.new(0,6)},KeyCluster)
-
-local keyClusterBtns = {}
-local function RefreshKeyCluster()
-    for _,b in ipairs(keyClusterBtns) do b:Destroy() end
-    keyClusterBtns = {}
-    if not (isMobile and S.mobileKeyCluster) then
-        KeyCluster.Visible = false
-        return
-    end
-    KeyCluster.Visible = true
-    local order = 0
-    local function addBtn(label, kind, bindKey)
-        order += 1
-        local b = N("TextButton",{
-            BackgroundColor3=C.card3,BorderSizePixel=0,
-            Text=label,TextColor3=C.text,TextSize=8,Font=Enum.Font.GothamBold,
-            Size=UDim2.fromOffset(48,32),
-            LayoutOrder=order,AutoButtonColor=false,
-        },KeyCluster)
-        Cr(b,6); Sk(b,C.border,1,0.5)
-        table.insert(keyClusterBtns, b)
-        local held = false
-        b.InputBegan:Connect(function(inp)
-            if inp.UserInputType==Enum.UserInputType.Touch or inp.UserInputType==Enum.UserInputType.MouseButton1 then
-                held = true
-                b.BackgroundColor3 = C.accent
-                if kind == "aim" then S.heldMobile = true; RefreshAimStates() end
-                if kind == "trigger" then S.trigger = true end
-            end
-        end)
-        b.InputEnded:Connect(function(inp)
-            if inp.UserInputType==Enum.UserInputType.Touch or inp.UserInputType==Enum.UserInputType.MouseButton1 then
-                held = false
-                b.BackgroundColor3 = C.card3
-                if kind == "aim" then S.heldMobile = false; RefreshAimStates() end
-                if kind == "trigger" then S.trigger = false end
-                if kind == "toggle" then
-                    if bindKey == "keyEsp" then S.esp = not S.esp; Toast("ESP "..(S.esp and "ON" or "OFF"), S.esp and C.green or C.red) end
-                    if bindKey == "keySkeleton" then S.skeleton = not S.skeleton; Toast("Skeleton "..(S.skeleton and "ON" or "OFF"), C.accent) end
-                    if bindKey == "keyChams" then S.chams = not S.chams; Toast("Chams "..(S.chams and "ON" or "OFF"), C.accent) end
-                end
-                if kind == "menu" then
-                    if S.open then CloseMenu() else OpenMenu() end
-                end
-                if kind == "panic" then FirePanic() end
-            end
-        end)
-    end
-    addBtn("AIM","aim","keyAim")
-    addBtn("TRIG","trigger","keyTrigger")
-    addBtn("ESP","toggle","keyEsp")
-    addBtn("SKEL","toggle","keySkeleton")
-    addBtn("CHAM","toggle","keyChams")
-    addBtn("MENU","menu","keyMenu")
-    addBtn("STOP","panic","keyPanic")
-end
-
--- ============================================================
--- H FLOATING BUTTON (upgraded reopen)
--- ============================================================
-local HBtn = N("Frame",{
-    BackgroundColor3=C.accent,BorderSizePixel=0,
-    Size=UDim2.fromOffset(46,46),
-    Position=UDim2.new(S.hbX,0,S.hbY,0),
-    AnchorPoint=Vector2.new(1,0.5),
-    ZIndex=100, Visible=false,
-},Screen)
-Cr(HBtn,23); Sk(HBtn,C.white,2,0.3)
-local HLabel = Lbl(HBtn,"H",16,C.white,Enum.Font.GothamBold,Enum.TextXAlignment.Center)
-HLabel.Size=UDim2.fromScale(1,1); HLabel.TextXAlignment=Enum.TextXAlignment.Center
-HLabel.Position=UDim2.fromOffset(0,-4)
-
--- status LEDs row (dots at bottom)
-local ledRow = N("Frame",{BackgroundTransparency=1,
-    Size=UDim2.new(1,0,0,4),Position=UDim2.new(0,0,1,-8)},HBtn)
-N("UIListLayout",{FillDirection=Enum.FillDirection.Horizontal,Padding=UDim.new(0,2),
-    HorizontalAlignment=Enum.HorizontalAlignment.Center},ledRow)
-local ledAim = N("Frame",{BackgroundColor3=C.black,BorderSizePixel=0,
-    Size=UDim2.fromOffset(3,3)},ledRow); Cr(ledAim,2)
-local ledEsp = N("Frame",{BackgroundColor3=C.black,BorderSizePixel=0,
-    Size=UDim2.fromOffset(3,3)},ledRow); Cr(ledEsp,2)
-local ledTrg = N("Frame",{BackgroundColor3=C.black,BorderSizePixel=0,
-    Size=UDim2.fromOffset(3,3)},ledRow); Cr(ledTrg,2)
-local function RefreshLeds()
-    ledAim.BackgroundColor3 = S.aim and C.green or C.black
-    ledEsp.BackgroundColor3 = S.esp and C.green or C.black
-    ledTrg.BackgroundColor3 = S.trigger and C.green or C.black
-end
-
--- long-press detection for quick actions
-local hPressStart = 0
-local hPressTimer = nil
-local hWasLong = false
-
-local function FirePanic()
-    S.aim=false; S.trigger=false; S.esp=false; S.skeleton=false
-    S.boxEsp=false; S.chams=false; S.tracers=false; S.hpBar=false
-    S.heldPC=false; S.heldMobile=false
-    for plr in pairs(ESPMap) do pcall(KillESP, plr) end
-    for plr in pairs(SkeletonMap) do pcall(KillSkelly, plr) end
-    for plr in pairs(BoxMap) do pcall(KillBox, plr) end
-    for plr in pairs(ChamsMap) do pcall(KillChams, plr) end
-    if Watermark then Watermark.Visible = false end
-    if TargetHud then TargetHud.Visible = false end
-    RefreshLeds()
-    Toast("PANIC fired", C.red)
-end
-_G.HanamiPanic = FirePanic
-
-local QuickActions = N("Frame",{
-    BackgroundColor3=C.card,BorderSizePixel=0,
-    Size=UDim2.fromOffset(140,0),
-    Position=UDim2.new(1,-56,0.5,0),
-    AnchorPoint=Vector2.new(1,0.5),
-    Visible=false, ZIndex=99, ClipsDescendants=true,
-},Screen)
-Cr(QuickActions,10); Sk(QuickActions,C.accent,1,0.3)
-N("UIListLayout",{FillDirection=Enum.FillDirection.Vertical,Padding=UDim.new(0,4),
-    HorizontalAlignment=Enum.HorizontalAlignment.Center},QuickActions)
-N("UIPadding",{PaddingTop=UDim.new(0,6),PaddingBottom=UDim.new(0,6)},QuickActions)
-
-local function AddQuickAction(label, color, cb)
-    local b = N("TextButton",{
-        BackgroundColor3=C.card3,BorderSizePixel=0,
-        Text=label,TextColor3=color,TextSize=9,Font=Enum.Font.GothamBold,
-        Size=UDim2.new(1,-12,0,28),AutoButtonColor=false,
-    },QuickActions)
-    Cr(b,6)
-    b.Activated:Connect(cb)
-end
-AddQuickAction("Toggle Aim", C.text, function()
-    S.aim = not S.aim; RefreshLeds()
-    Toast("Aim "..(S.aim and "ON" or "OFF"), S.aim and C.green or C.red)
-end)
-AddQuickAction("Toggle ESP", C.text, function()
-    S.esp = not S.esp; RefreshLeds()
-    Toast("ESP "..(S.esp and "ON" or "OFF"), S.esp and C.green or C.red)
-end)
-AddQuickAction("Toggle Trigger", C.text, function()
-    S.trigger = not S.trigger; RefreshLeds()
-    Toast("Trigger "..(S.trigger and "ON" or "OFF"), S.trigger and C.green or C.red)
-end)
-AddQuickAction("PANIC", C.red, function()
-    FirePanic()
-    QuickActions.Visible = false
-    QuickActions.Size = UDim2.fromOffset(140,0)
-end)
-
-local function ShowQuickActions()
-    QuickActions.Visible = true
-    local targetY = HBtn.AbsolutePosition.Y + HBtn.AbsoluteSize.Y/2
-    local totalH = 4*28 + 3*4 + 12
-    QuickActions.Position = UDim2.new(HBtn.Position.X.Scale, HBtn.Position.X.Offset - 50, HBtn.Position.Y.Scale, HBtn.Position.Y.Offset)
-    QuickActions.AnchorPoint = Vector2.new(1, 0.5)
-    Tw(QuickActions, {Size = UDim2.fromOffset(140, totalH)}, .18)
-end
-local function HideQuickActions()
-    Tw(QuickActions, {Size = UDim2.fromOffset(140, 0)}, .16)
-    task.delay(.18, function() QuickActions.Visible = false end)
-end
-
-HBtn.InputBegan:Connect(function(inp)
-    if inp.UserInputType==Enum.UserInputType.MouseButton1 or inp.UserInputType==Enum.UserInputType.Touch then
-        hPressStart = os.clock()
-        hWasLong = false
-        hPressTimer = task.delay(0.45, function()
-            hWasLong = true
-            ShowQuickActions()
-        end)
-    end
-end)
-Track(UIS.InputChanged:Connect(function(inp)
-    if hPressStart == 0 then return end
-    if inp.UserInputType==Enum.UserInputType.Touch or inp.UserInputType==Enum.UserInputType.MouseMovement then
-        local vp = Camera.ViewportSize
-        local ax = inp.Position.X / vp.X
-        local ay = inp.Position.Y / vp.Y
-        -- dragging the H button
-        local curX = HBtn.AbsolutePosition.X + HBtn.AbsoluteSize.X/2
-        local curY = HBtn.AbsolutePosition.Y + HBtn.AbsoluteSize.Y/2
-        if math.abs(inp.Position.X - curX) < 40 and math.abs(inp.Position.Y - curY) < 40 then
-            S.hbX = math.clamp(ax, 0.05, 0.98)
-            S.hbY = math.clamp(ay, 0.05, 0.98)
-            HBtn.Position = UDim2.new(S.hbX, 0, S.hbY, 0)
-            if hPressTimer then task.cancel(hPressTimer); hPressTimer = nil end
-            hPressStart = 0
-        end
-    end
-end))
-HBtn.InputEnded:Connect(function(inp)
-    if inp.UserInputType==Enum.UserInputType.MouseButton1 or inp.UserInputType==Enum.UserInputType.Touch then
-        if hPressTimer then task.cancel(hPressTimer); hPressTimer = nil end
-        if not hWasLong and hPressStart > 0 then
-            if S.open then CloseMenu() else OpenMenu() end
-        end
-        hPressStart = 0
-    end
-end)
-
--- quick action panel: click outside to close
-Track(UIS.InputBegan:Connect(function(inp, gp)
-    if gp then return end
-    if not QuickActions.Visible then return end
-    if inp.UserInputType == Enum.UserInputType.MouseButton1
-    or inp.UserInputType == Enum.UserInputType.Touch then
-        local p = inp.Position
-        local aPos, aSz = QuickActions.AbsolutePosition, QuickActions.AbsoluteSize
-        local hPos, hSz = HBtn.AbsolutePosition, HBtn.AbsoluteSize
-        local insideQA = p.X >= aPos.X and p.X <= aPos.X+aSz.X and p.Y >= aPos.Y and p.Y <= aPos.Y+aSz.Y
-        local insideH  = p.X >= hPos.X and p.X <= hPos.X+hSz.X and p.Y >= hPos.Y and p.Y <= hPos.Y+hSz.Y
-        if not insideQA and not insideH then HideQuickActions() end
     end
 end))
 
@@ -1982,13 +1443,17 @@ local function Visible(char, part)
     local r = WS:Raycast(Camera.CFrame.Position, part.Position - Camera.CFrame.Position, rayParams)
     return not r or r.Instance:IsDescendantOf(char)
 end
+
 local function ThreatScore(plr)
-    local ch = plr.Character; if not ch then return 0 end
-    local head = ch:FindFirstChild("Head"); if not head then return 0 end
-    local toMe = Camera.CFrame.Position - head.Position
+    local ch = plr.Character
+    if not ch then return 0 end
+    local head = ch:FindFirstChild("Head")
+    if not head then return 0 end
+    local toMe = (Camera.CFrame.Position - head.Position)
     if toMe.Magnitude < 0.1 then return 0 end
     return math.clamp(head.CFrame.LookVector:Dot(toMe.Unit), -1, 1)
 end
+
 local function ScoreTarget(plr, ch, pt, screenD, worldD)
     local mode = S.targetPriority
     if mode == "Closest" then return worldD end
@@ -2001,9 +1466,11 @@ local function ScoreTarget(plr, ch, pt, screenD, worldD)
 end
 
 local stickyTarget, stickySince = nil, 0
+
 local function Target(ignoreSticky)
     local m = UIS:GetMouseLocation()
     local best, bestScore, bestPart = nil, math.huge, nil
+
     if S.stickyLock and stickyTarget and not ignoreSticky then
         local stCh = stickyTarget.Character
         if stCh and (not S.alive or Alive(stCh))
@@ -2017,7 +1484,7 @@ local function Target(ignoreSticky)
                     local sc, vis = Camera:WorldToViewportPoint(stPart.Position)
                     if vis and sc.Z > 0 then
                         local cd = (Vector2.new(sc.X, sc.Y) - m).Magnitude
-                        if cd <= S.fov and (os.clock() - stickySince) < S.stickyTime*3 then
+                        if cd <= S.fov and (os.clock() - stickySince) < S.stickyTime * 3 then
                             return stPart, stickyTarget
                         end
                     end
@@ -2026,6 +1493,7 @@ local function Target(ignoreSticky)
         end
         stickyTarget = nil
     end
+
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LP and not Teammate(plr)
         and not S.friends[plr.Name] and not S.blacklist[plr.Name] then
@@ -2042,7 +1510,9 @@ local function Target(ignoreSticky)
                                 if Visible(ch, pt) then
                                     local score = ScoreTarget(plr, ch, pt, screenD, worldD)
                                     if score < bestScore then
-                                        bestScore = score; best = plr; bestPart = pt
+                                        bestScore = score
+                                        best = plr
+                                        bestPart = pt
                                     end
                                 end
                             end
@@ -2052,8 +1522,12 @@ local function Target(ignoreSticky)
             end
         end
     end
+
     if best then
-        if stickyTarget ~= best then stickyTarget = best; stickySince = os.clock() end
+        if stickyTarget ~= best then
+            stickyTarget = best
+            stickySince = os.clock()
+        end
         return bestPart, best
     end
     return nil
@@ -2066,7 +1540,7 @@ local function ReactionReady()
     local now = os.clock()
     if not reactionArmed then
         reactionArmed = true
-        reactionStart = now + math.random(S.humanDelayMin, S.humanDelayMax)/1000
+        reactionStart = now + math.random(S.humanDelayMin, S.humanDelayMax) / 1000
         return false
     end
     return now >= reactionStart
@@ -2091,13 +1565,13 @@ function KillESP(plr)
     ESPMap[plr] = nil
 end
 function KillSkelly(plr)
-    local l = SkeletonMap[plr]; if not l then return end
-    for _, x in ipairs(l) do pcall(function() x.line:Destroy() end) end
+    local list = SkeletonMap[plr]; if not list then return end
+    for _, l in ipairs(list) do pcall(function() l.line:Destroy() end) end
     SkeletonMap[plr] = nil
 end
 function KillBox(plr)
-    local f = BoxMap[plr]; if not f then return end
-    for _, x in ipairs(f) do pcall(function() x:Destroy() end) end
+    local o = BoxMap[plr]; if not o then return end
+    for _, f in ipairs(o) do pcall(function() f:Destroy() end) end
     BoxMap[plr] = nil
 end
 function KillChams(plr)
@@ -2105,7 +1579,8 @@ function KillChams(plr)
     for part, orig in pairs(o) do
         pcall(function()
             if part and part.Parent then
-                part.Material = orig.m; part.Color = orig.c
+                part.Material = orig.m
+                part.Color = orig.c
             end
         end)
     end
@@ -2116,69 +1591,106 @@ local function MakeESP(plr)
     if plr == LP then return end
     KillESP(plr)
     local ch = plr.Character; if not ch then return end
-    local root = ch:FindFirstChild("HumanoidRootPart") or ch:FindFirstChild("UpperTorso") or ch:FindFirstChild("Torso")
+    local root = ch:FindFirstChild("HumanoidRootPart")
+        or ch:FindFirstChild("UpperTorso") or ch:FindFirstChild("Torso")
     if not root then return end
+
     local hl
     if S.glowOn and S.boxStyle ~= "None" then
-        hl = N("Highlight",{FillColor=S.espColor,OutlineColor=C.white,
-            FillTransparency=S.espFill,OutlineTransparency=S.espOutline,
-            DepthMode=Enum.HighlightDepthMode.AlwaysOnTop,Adornee=ch},ch)
+        hl = N("Highlight",{
+            FillColor = S.espColor,
+            OutlineColor = C.white,
+            FillTransparency = S.espFill,
+            OutlineTransparency = S.espOutline,
+            DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
+            Adornee = ch,
+        },ch)
     end
-    local bb = N("BillboardGui",{Adornee=root,Size=UDim2.fromOffset(180,32),
-        StudsOffset=Vector3.new(0,3,0),AlwaysOnTop=true},root)
+
+    local bb = N("BillboardGui",{
+        Adornee = root,
+        Size = UDim2.fromOffset(180,32),
+        StudsOffset = Vector3.new(0,3,0),
+        AlwaysOnTop = true,
+    },root)
     local txt = Lbl(bb,"",8,C.white,Enum.Font.GothamBold,Enum.TextXAlignment.Center)
-    txt.Size=UDim2.fromScale(1,1); txt.TextXAlignment=Enum.TextXAlignment.Center
+    txt.Size = UDim2.fromScale(1,1); txt.TextXAlignment = Enum.TextXAlignment.Center
+
     local hpBg, hpFg
     if S.hpBar then
-        hpBg = N("Frame",{BackgroundColor3=Color3.fromRGB(20,20,20),BorderSizePixel=0,
-            Size=UDim2.fromOffset(4,30),Position=UDim2.new(0,-8,0,1),BackgroundTransparency=0.3},bb)
-        Cr(hpBg,2)
-        hpFg = N("Frame",{BackgroundColor3=C.green,BorderSizePixel=0,
-            Size=UDim2.new(1,0,1,0),Position=UDim2.new(0,0,1,-1),AnchorPoint=Vector2.new(0,1)},hpBg)
-        Cr(hpFg,2)
+        hpBg = N("Frame",{
+            BackgroundColor3=Color3.fromRGB(20,20,20),BorderSizePixel=0,
+            Size=UDim2.fromOffset(4,30),
+            Position=UDim2.new(0,-8,0,1),
+            BackgroundTransparency=0.3,
+        },bb); Cr(hpBg,2)
+        hpFg = N("Frame",{
+            BackgroundColor3=C.green,BorderSizePixel=0,
+            Size=UDim2.new(1,0,1,0),
+            Position=UDim2.new(0,0,1,-1),
+            AnchorPoint=Vector2.new(0,1),
+        },hpBg); Cr(hpFg,2)
     end
+
     local tracer
     if S.tracers then
-        tracer = N("Frame",{BackgroundColor3=S.espColor,BorderSizePixel=0,
-            Size=UDim2.new(0,0,0,0),Visible=false},Screen)
+        tracer = N("Frame",{
+            BackgroundColor3 = S.espColor,
+            BorderSizePixel = 0,
+            Size = UDim2.new(0,0,0,0),
+            Visible = false,
+        },Screen)
     end
+
     ESPMap[plr] = {hl=hl, bb=bb, txt=txt, hpBg=hpBg, hpFg=hpFg, tracer=tracer}
 end
 
 local SKEL_JOINTS = {
-    {"Head","UpperTorso"},{"UpperTorso","LowerTorso"},
-    {"UpperTorso","LeftUpperArm"},{"LeftUpperArm","LeftLowerArm"},{"LeftLowerArm","LeftHand"},
-    {"UpperTorso","RightUpperArm"},{"RightUpperArm","RightLowerArm"},{"RightLowerArm","RightHand"},
-    {"LowerTorso","LeftUpperLeg"},{"LeftUpperLeg","LeftLowerLeg"},{"LeftLowerLeg","LeftFoot"},
-    {"LowerTorso","RightUpperLeg"},{"RightUpperLeg","RightLowerLeg"},{"RightLowerLeg","RightFoot"},
+    {"Head","UpperTorso"}, {"UpperTorso","LowerTorso"},
+    {"UpperTorso","LeftUpperArm"}, {"LeftUpperArm","LeftLowerArm"},
+    {"LeftLowerArm","LeftHand"},
+    {"UpperTorso","RightUpperArm"}, {"RightUpperArm","RightLowerArm"},
+    {"RightLowerArm","RightHand"},
+    {"LowerTorso","LeftUpperLeg"}, {"LeftUpperLeg","LeftLowerLeg"},
+    {"LeftLowerLeg","LeftFoot"},
+    {"LowerTorso","RightUpperLeg"}, {"RightUpperLeg","RightLowerLeg"},
+    {"RightLowerLeg","RightFoot"},
 }
+
 local function MakeSkelly(plr)
     if plr == LP then return end
     KillSkelly(plr)
     local ch = plr.Character; if not ch then return end
     local lines = {}
     for _, pair in ipairs(SKEL_JOINTS) do
-        local a = ch:FindFirstChild(pair[1]); local b = ch:FindFirstChild(pair[2])
+        local a = ch:FindFirstChild(pair[1])
+        local b = ch:FindFirstChild(pair[2])
         if a and b and a:IsA("BasePart") and b:IsA("BasePart") then
             local ln = N("LineHandleAdornment",{
-                Adornee=a, Thickness=1.5, Color3=S.skeletonColor,
-                Transparency=0.2, AlwaysOnTop=true, ZIndex=20,
+                Adornee = a, Thickness = 1.5,
+                Color3 = S.skeletonColor, Transparency = 0.2,
+                AlwaysOnTop = true, ZIndex = 20,
             },a)
             table.insert(lines, {line=ln, a=a, b=b})
         end
     end
     SkeletonMap[plr] = lines
 end
+
 local function MakeBox(plr)
     if plr == LP then return end
     KillBox(plr)
     local frames = {}
     for i=1,4 do
-        local f = N("Frame",{BackgroundColor3=S.boxColor,BorderSizePixel=0,Visible=false},Screen)
+        local f = N("Frame",{
+            BackgroundColor3 = S.boxColor,
+            BorderSizePixel = 0, Visible = false,
+        },Screen)
         table.insert(frames, f)
     end
     BoxMap[plr] = frames
 end
+
 local function MakeChams(plr)
     if plr == LP then return end
     KillChams(plr)
@@ -2186,13 +1698,19 @@ local function MakeChams(plr)
     local orig = {}
     for _, p in ipairs(ch:GetDescendants()) do
         if p:IsA("BasePart") then
-            orig[p] = {m=p.Material, c=p.Color}
-            pcall(function() p.Material = Enum.Material.ForceField; p.Color = S.chamsColor end)
+            orig[p] = {m = p.Material, c = p.Color}
+            pcall(function()
+                p.Material = Enum.Material.ForceField
+                p.Color = S.chamsColor
+            end)
         end
     end
     ChamsMap[plr] = orig
 end
 
+-- ============================================================
+-- ADAPTIVE
+-- ============================================================
 local frameSamples = {}
 local function RecordFrame(dt)
     table.insert(frameSamples, dt)
@@ -2212,6 +1730,9 @@ local function EffectiveEspHz()
     return base
 end
 
+-- ============================================================
+-- ESP TICK
+-- ============================================================
 local function ColorForDistance(baseColor, d)
     if not S.distFade then return baseColor end
     local t = math.clamp(d / S.espDist, 0, 1)
@@ -2219,7 +1740,8 @@ local function ColorForDistance(baseColor, d)
 end
 local function TeamColor(plr)
     if not S.espTeamColor then return nil end
-    local t = plr.Team; if not t then return nil end
+    local t = plr.Team
+    if not t then return nil end
     return t.TeamColor and t.TeamColor.Color
 end
 
@@ -2231,16 +1753,27 @@ local function TickESP()
                 continue
             end
             local ch = plr.Character
-            if not ch then KillESP(plr); KillSkelly(plr); KillBox(plr); KillChams(plr); continue end
-            local root = ch:FindFirstChild("HumanoidRootPart") or ch:FindFirstChild("UpperTorso") or ch:FindFirstChild("Torso")
-            if not root then KillESP(plr); KillSkelly(plr); KillBox(plr); KillChams(plr); continue end
+            if not ch then
+                KillESP(plr); KillSkelly(plr); KillBox(plr); KillChams(plr)
+                continue
+            end
+            local root = ch:FindFirstChild("HumanoidRootPart")
+                or ch:FindFirstChild("UpperTorso") or ch:FindFirstChild("Torso")
+            if not root then
+                KillESP(plr); KillSkelly(plr); KillBox(plr); KillChams(plr)
+                continue
+            end
             local d = (root.Position - Camera.CFrame.Position).Magnitude
-            if d > S.espDist then KillESP(plr); KillSkelly(plr); KillBox(plr); KillChams(plr); continue end
+            if d > S.espDist then
+                KillESP(plr); KillSkelly(plr); KillBox(plr); KillChams(plr)
+                continue
+            end
 
             if not ESPMap[plr] then MakeESP(plr) end
             local o = ESPMap[plr]
             if o then
-                local col = ColorForDistance(TeamColor(plr) or S.espColor, d)
+                local col = TeamColor(plr) or S.espColor
+                col = ColorForDistance(col, d)
                 if o.hl then
                     o.hl.FillColor = col
                     o.hl.FillTransparency = S.espFill
@@ -2260,7 +1793,7 @@ local function TickESP()
                         local pct = math.clamp(hu.Health / math.max(1, hu.MaxHealth), 0, 1)
                         o.hpBg.Visible = true
                         o.hpFg.Size = UDim2.new(1, 0, pct, 0)
-                        o.hpFg.BackgroundColor3 = Color3.new(1-pct, pct, 0.2)
+                        o.hpFg.BackgroundColor3 = Color3.new(1 - pct, pct, 0.2)
                     else
                         o.hpBg.Visible = false
                     end
@@ -2269,12 +1802,13 @@ local function TickESP()
                     local scr, on = Camera:WorldToViewportPoint(root.Position)
                     if on then
                         local vp = Camera.ViewportSize
-                        local fx, fy = vp.X/2, vp.Y
-                        local dx, dy = scr.X - fx, scr.Y - fy
+                        local fromX, fromY = vp.X/2, vp.Y
+                        local toX, toY = scr.X, scr.Y
+                        local dx, dy = toX - fromX, toY - fromY
                         local len = math.sqrt(dx*dx + dy*dy)
                         local ang = math.deg(math.atan2(dy, dx))
                         o.tracer.Size = UDim2.fromOffset(len, 1)
-                        o.tracer.Position = UDim2.fromOffset(fx, fy)
+                        o.tracer.Position = UDim2.fromOffset(fromX, fromY)
                         o.tracer.Rotation = ang
                         o.tracer.BackgroundColor3 = col
                         o.tracer.Visible = true
@@ -2283,17 +1817,20 @@ local function TickESP()
                     end
                 end
             end
+
             if S.skeleton then
                 if not SkeletonMap[plr] then MakeSkelly(plr) end
                 local lines = SkeletonMap[plr]
                 if lines then
                     for _, ln in ipairs(lines) do
                         if ln.a and ln.a.Parent and ln.b and ln.b.Parent then
-                            local from = ln.a.Position; local to = ln.b.Position
+                            local from = ln.a.Position
+                            local to = ln.b.Position
                             local dir = to - from
-                            if dir.Magnitude > 0.05 then
-                                ln.line.Length = dir.Magnitude
-                                ln.line.CFrame = CFrame.lookAt(from + dir*0.5, to)
+                            local dist = dir.Magnitude
+                            if dist > 0.05 then
+                                ln.line.Length = dist
+                                ln.line.CFrame = CFrame.lookAt(from + dir * 0.5, to)
                                 ln.line.Color3 = S.skeletonColor
                             end
                         end
@@ -2302,6 +1839,7 @@ local function TickESP()
             else
                 if SkeletonMap[plr] then KillSkelly(plr) end
             end
+
             if S.boxEsp then
                 if not BoxMap[plr] then MakeBox(plr) end
                 local frames = BoxMap[plr]
@@ -2311,16 +1849,21 @@ local function TickESP()
                     local sTL, onTL = Camera:WorldToViewportPoint(topL)
                     local sBR, onBR = Camera:WorldToViewportPoint(botR)
                     if onTL and onBR then
-                        local x1,y1 = sTL.X, sTL.Y
-                        local x2,y2 = sBR.X, sBR.Y
-                        local w,h = x2-x1, y2-y1
-                        frames[1].Position = UDim2.fromOffset(x1, y1); frames[1].Size = UDim2.fromOffset(w, 1)
-                        frames[2].Position = UDim2.fromOffset(x1, y1+h); frames[2].Size = UDim2.fromOffset(w, 1)
-                        frames[3].Position = UDim2.fromOffset(x1, y1); frames[3].Size = UDim2.fromOffset(1, h)
-                        frames[4].Position = UDim2.fromOffset(x1+w, y1); frames[4].Size = UDim2.fromOffset(1, h)
+                        local x1, y1 = sTL.X, sTL.Y
+                        local x2, y2 = sBR.X, sBR.Y
+                        local w = x2 - x1; local h = y2 - y1
+                        frames[1].Position = UDim2.fromOffset(x1, y1)
+                        frames[1].Size = UDim2.fromOffset(w, 1)
+                        frames[2].Position = UDim2.fromOffset(x1, y1 + h)
+                        frames[2].Size = UDim2.fromOffset(w, 1)
+                        frames[3].Position = UDim2.fromOffset(x1, y1)
+                        frames[3].Size = UDim2.fromOffset(1, h)
+                        frames[4].Position = UDim2.fromOffset(x1 + w, y1)
+                        frames[4].Size = UDim2.fromOffset(1, h)
                         local col = ColorForDistance(TeamColor(plr) or S.boxColor, d)
                         for _, f in ipairs(frames) do
-                            f.BackgroundColor3 = col; f.Visible = true
+                            f.BackgroundColor3 = col
+                            f.Visible = true
                         end
                     else
                         for _, f in ipairs(frames) do f.Visible = false end
@@ -2329,6 +1872,7 @@ local function TickESP()
             else
                 if BoxMap[plr] then KillBox(plr) end
             end
+
             if S.chams then
                 if not ChamsMap[plr] then MakeChams(plr) end
             else
@@ -2373,7 +1917,9 @@ local function TickTrigger()
                         local sc, vis = Camera:WorldToViewportPoint(pt.Position)
                         if vis and sc.Z > 0 then
                             local d = (Vector2.new(sc.X, sc.Y) - m).Magnitude
-                            if d <= 6 and Visible(ch, pt) then hit = true; break end
+                            if d <= 6 and Visible(ch, pt) then
+                                hit = true; break
+                            end
                         end
                     end
                 end
@@ -2382,7 +1928,7 @@ local function TickTrigger()
     end
     if hit then
         local now = os.clock()
-        if now - trigLast >= (S.trigDelay/1000) then
+        if now - trigLast >= (S.trigDelay / 1000) then
             trigLast = now
             task.spawn(function()
                 pcall(function()
@@ -2395,63 +1941,64 @@ local function TickTrigger()
 end
 
 -- ============================================================
--- INPUT — uses S.binds table
+-- INPUT
 -- ============================================================
-local function FirePanicWrapped()
-    if _G.HanamiPanic then _G.HanamiPanic() end
-end
+local Reopen=N("TextButton",{
+    BackgroundColor3=C.accent,BorderSizePixel=0,
+    Text="H",TextColor3=C.white,TextSize=13,Font=Enum.Font.GothamBold,
+    Size=UDim2.fromOffset(40,40),Position=UDim2.new(1,-52,0.5,-20),
+    AutoButtonColor=false,Visible=false,ZIndex=100},Screen)
+Cr(Reopen,10)
 
-Track(UIS.InputBegan:Connect(function(inp, gp)
-    if gp then return end
-    if inp.UserInputType == Enum.UserInputType.MouseButton2 then S.heldPC = true end
-    if inp.UserInputType == Enum.UserInputType.Keyboard then
-        local kc = inp.KeyCode
-        local b = S.binds
-        if kc == b.keyMenu then
-            if S.open then CloseMenu() else OpenMenu() end
-        elseif kc == b.keyAim then
-            S.heldPC = true
-        elseif kc == b.keyTrigger then
-            S.trigger = true
-        elseif kc == b.keyEsp then
-            S.esp = not S.esp
-            RefreshLeds()
-            Toast("ESP "..(S.esp and "ON" or "OFF"), S.esp and C.green or C.red)
-        elseif kc == b.keySkeleton then
-            S.skeleton = not S.skeleton
-            Toast("Skeleton "..(S.skeleton and "ON" or "OFF"), C.accent)
-        elseif kc == b.keyChams then
-            S.chams = not S.chams
-            Toast("Chams "..(S.chams and "ON" or "OFF"), C.accent)
-        elseif kc == b.keyPanic then
-            FirePanicWrapped()
-        end
-    end
-end))
-Track(UIS.InputEnded:Connect(function(inp)
-    if inp.UserInputType == Enum.UserInputType.MouseButton2 then S.heldPC = false end
-    if inp.UserInputType == Enum.UserInputType.Keyboard then
-        local kc = inp.KeyCode
-        if kc == S.binds.keyAim then S.heldPC = false end
-        if kc == S.binds.keyTrigger then S.trigger = false end
-    end
-end))
+local function OpenMenu()  S.open=true;  Main.Visible=true;  Reopen.Visible=false end
+local function CloseMenu() S.open=false; Main.Visible=false; Reopen.Visible=true  end
 
-local function OpenMenu()  S.open=true;  Main.Visible=true;  HBtn.Visible=false end
-local function CloseMenu() S.open=false; Main.Visible=false; HBtn.Visible=true end
-function OpenMenu()  S.open=true;  Main.Visible=true;  HBtn.Visible=false end
-function CloseMenu() S.open=false; Main.Visible=false; HBtn.Visible=true end
-
+Reopen.Activated:Connect(OpenMenu)
 MinBtn.Activated:Connect(CloseMenu)
 CloseBtn.Activated:Connect(function()
     Tw(Main,{Size=UDim2.fromOffset(0,0)},.18)
     task.delay(.18, CloseMenu)
 end)
 
--- drag main window
+local function FirePanic()
+    S.aim=false; S.trigger=false; S.esp=false; S.skeleton=false
+    S.boxEsp=false; S.chams=false; S.tracers=false; S.hpBar=false
+    S.heldPC=false; S.heldMobile=false
+    for plr in pairs(ESPMap) do pcall(KillESP, plr) end
+    for plr in pairs(SkeletonMap) do pcall(KillSkelly, plr) end
+    for plr in pairs(BoxMap) do pcall(KillBox, plr) end
+    for plr in pairs(ChamsMap) do pcall(KillChams, plr) end
+    if Watermark then Watermark.Visible = false end
+    if TargetHud then TargetHud.Visible = false end
+    Toast("PANIC fired — all features off", C.red)
+end
+
+Track(UIS.InputBegan:Connect(function(inp, gp)
+    if gp then return end
+    if inp.UserInputType == Enum.UserInputType.MouseButton2 then S.heldPC = true end
+    if inp.UserInputType == Enum.UserInputType.Keyboard then
+        if inp.KeyCode == S.keyMenu then
+            if S.open then CloseMenu() else OpenMenu() end
+        end
+        if inp.KeyCode == S.aimKey then S.heldPC = true end
+        if inp.KeyCode == S.keyEsp then
+            S.esp = not S.esp
+            Toast("ESP "..(S.esp and "ON" or "OFF"), S.esp and C.green or C.red)
+        end
+        if inp.KeyCode == S.keyPanic then FirePanic() end
+    end
+end))
+Track(UIS.InputEnded:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.MouseButton2 then S.heldPC = false end
+    if inp.UserInputType == Enum.UserInputType.Keyboard then
+        if inp.KeyCode == S.aimKey then S.heldPC = false end
+    end
+end))
+
 local dragging, dragSt, dragPos = false, nil, nil
 Track(Top.InputBegan:Connect(function(inp)
-    if inp.UserInputType==Enum.UserInputType.MouseButton1 or inp.UserInputType==Enum.UserInputType.Touch then
+    if inp.UserInputType == Enum.UserInputType.MouseButton1
+    or inp.UserInputType == Enum.UserInputType.Touch then
         dragging = true; dragSt = inp.Position; dragPos = Main.Position
         local c
         c = inp.Changed:Connect(function()
@@ -2465,36 +2012,38 @@ Track(Top.InputBegan:Connect(function(inp)
 end))
 Track(UIS.InputChanged:Connect(function(inp)
     if not dragging then return end
-    if inp.UserInputType==Enum.UserInputType.MouseMovement or inp.UserInputType==Enum.UserInputType.Touch then
+    if inp.UserInputType == Enum.UserInputType.MouseMovement
+    or inp.UserInputType == Enum.UserInputType.Touch then
         local d = inp.Position - dragSt
-        Main.Position = UDim2.new(dragPos.X.Scale, dragPos.X.Offset+d.X,
-            dragPos.Y.Scale, dragPos.Y.Offset+d.Y)
+        Main.Position = UDim2.new(dragPos.X.Scale, dragPos.X.Offset + d.X,
+            dragPos.Y.Scale, dragPos.Y.Offset + d.Y)
     end
 end))
 
 -- ============================================================
--- RENDER
+-- RENDER LOOP
 -- ============================================================
 local sessionStart = os.clock()
 local accText = 0
 local accESP = 0
-local fpsAcc, fpsFrames, fpsVal, fpsTimer = 0,0,0,0
+local fpsAcc, fpsFrames, fpsVal, fpsTimer = 0, 0, 0, 0
 
 Track(RS.RenderStepped:Connect(function(dt)
     RecordFrame(dt)
+
     fpsAcc += dt; fpsFrames += 1; fpsTimer += dt
     if fpsTimer >= 0.5 then
-        fpsVal = math.floor(fpsFrames/fpsAcc); fpsAcc=0; fpsFrames=0; fpsTimer=0
-        RefreshLeds()
+        fpsVal = math.floor(fpsFrames / fpsAcc)
+        fpsAcc = 0; fpsFrames = 0; fpsTimer = 0
     end
 
     FOVCont.Visible = S.showFov and S.aim and Held()
     if FOVCont.Visible then
         local r = S.fov * 2
-        FOVCont.Size = UDim2.fromOffset(r,r)
+        FOVCont.Size = UDim2.fromOffset(r, r)
         local vp = Camera.ViewportSize
         FOVCont.Position = UDim2.fromOffset(vp.X/2 - r/2, vp.Y/2 - r/2)
-        FOVCont.AnchorPoint = Vector2.new(0,0)
+        FOVCont.AnchorPoint = Vector2.new(0, 0)
         FOVCircle.Visible = S.fovShape == "Circle"
         FOVSquare.Visible = S.fovShape ~= "Circle"
         FOVCircleStroke.Color = S.aimColor
@@ -2518,13 +2067,13 @@ Track(RS.RenderStepped:Connect(function(dt)
                 if S.humanJitter then
                     local amp = S.humanJitterAmp
                     aimPos = aimPos + Vector3.new(
-                        (math.random()-0.5)*amp,
-                        (math.random()-0.5)*amp,
-                        (math.random()-0.5)*amp
+                        (math.random()-0.5) * amp,
+                        (math.random()-0.5) * amp,
+                        (math.random()-0.5) * amp
                     )
                 end
                 local desired = CFrame.lookAt(Camera.CFrame.Position, aimPos)
-                local rawA = math.clamp(S.smooth*6*dt, 0.01, 0.5)
+                local rawA = math.clamp(S.smooth * 6 * dt, 0.01, 0.5)
                 local a = CurveAlpha(rawA, S.smoothCurve)
                 Camera.CFrame = Camera.CFrame:Lerp(desired, a)
             end
@@ -2538,7 +2087,7 @@ Track(RS.RenderStepped:Connect(function(dt)
     if S.esp then
         accESP += dt
         local hz = EffectiveEspHz()
-        if accESP >= (1/math.max(1,hz)) then
+        if accESP >= (1 / math.max(1, hz)) then
             accESP = 0
             TickESP()
         end
@@ -2558,13 +2107,14 @@ Track(RS.RenderStepped:Connect(function(dt)
             if hu and hu.Health > 0 then
                 TargetHud.Visible = true
                 THName.Text = stickyTarget.DisplayName
-                local pct = math.clamp(hu.Health/math.max(1,hu.MaxHealth),0,1)
-                THHpBar.Size = UDim2.new(pct,0,1,0)
+                local pct = math.clamp(hu.Health / math.max(1, hu.MaxHealth), 0, 1)
+                THHpBar.Size = UDim2.new(pct, 0, 1, 0)
                 THHpBar.BackgroundColor3 = Color3.new(1-pct, pct, 0.2)
                 local root = ch:FindFirstChild("HumanoidRootPart")
                 if root then
                     local d = (root.Position - Camera.CFrame.Position).Magnitude
-                    THInfo.Text = string.format("%d HP · %dm · @%s", math.floor(hu.Health), math.floor(d), stickyTarget.Name)
+                    THInfo.Text = string.format("%d HP  ·  %dm  ·  @%s",
+                        math.floor(hu.Health), math.floor(d), stickyTarget.Name)
                 end
             else
                 TargetHud.Visible = false
@@ -2579,7 +2129,7 @@ Track(RS.RenderStepped:Connect(function(dt)
     if Watermark then
         Watermark.Visible = S.watermark
         if S.watermark then
-            local parts = {"hanami v4.0"}
+            local parts = {"hanami v3.2.1"}
             if S.showFps then table.insert(parts, fpsVal.."fps") end
             if S.showPing then
                 pcall(function()
@@ -2587,29 +2137,33 @@ Track(RS.RenderStepped:Connect(function(dt)
                     table.insert(parts, p.."ms")
                 end)
             end
-            table.insert(parts, EffectiveEspHz().."hz")
+            table.insert(parts, EffectiveEspHz().."hz esp")
             WmLabel.Text = table.concat(parts, "  ·  ")
         end
-    end
-
-    if HBtn then
-        HBtn.Position = UDim2.new(S.hbX, 0, S.hbY, 0)
     end
 
     accText += dt
     if accText >= 0.25 then
         accText = 0
         local el = math.floor(os.clock() - sessionStart)
-        local m = math.floor(el/60); local sec = el%60
+        local m = math.floor(el/60)
+        local sec = el % 60
         local ts
-        if m >= 60 then ts = string.format("🕐 %dh %dm", math.floor(m/60), m%60)
-        elseif m > 0 then ts = string.format("🕐 %dm %ds", m, sec)
-        else ts = string.format("🕐 %ds on this server", sec) end
+        if m >= 60 then
+            ts = string.format("🕐 %dh %dm", math.floor(m/60), m%60)
+        elseif m > 0 then
+            ts = string.format("🕐 %dm %ds", m, sec)
+        else
+            ts = string.format("🕐 %ds on this server", sec)
+        end
         STime.Text = ts
         SPlr.Text = "👤 "..#Players:GetPlayers().." / "..Players.MaxPlayers
     end
 end))
 
+-- ============================================================
+-- PING LOOP
+-- ============================================================
 task.spawn(function()
     while task.wait(2) do
         pcall(function()
@@ -2619,55 +2173,49 @@ task.spawn(function()
         end)
     end
 end)
+
+-- ============================================================
+-- ANTI-AFK
+-- ============================================================
 task.spawn(function()
     while task.wait(60) do
-        pcall(function() VU:CaptureController(); VU:ClickButton2(Vector2.new()) end)
-    end
-end)
-
--- ============================================================
--- GLOBAL API + INIT
--- ============================================================
-_G.HanamiV4 = {
-    State = S,
-    SelectPage = SelectPage,
-    Target = Target,
-    Open = OpenMenu, Close = CloseMenu,
-    Toast = Toast,
-    SaveConfig = SaveConfig, LoadConfig = LoadConfig,
-    RefreshMobileBtn = RefreshMobileBtn,
-    RefreshKeyCluster = RefreshKeyCluster,
-    Panic = FirePanic,
-}
-
-SelectPage("Home")
-ApplyTheme("Hanami")
-RefreshMobileBtn()
-RefreshAimStates()
-RefreshKeyCluster()
-RefreshLeds()
-PositionTargetHud()
-
--- Keep mobile button + cluster visibility in sync with state changes
-task.spawn(function()
-    while task.wait(0.5) do
         pcall(function()
-            if MobBtn.Visible ~= (isMobile and S.mobileBtnEnabled) then
-                RefreshMobileBtn()
-            end
-            if KeyCluster.Visible ~= (isMobile and S.mobileKeyCluster) then
-                RefreshKeyCluster()
-            end
-            if HBtn.Visible ~= (not S.open and S.hbVisible ~= false) then
-                HBtn.Visible = not S.open
-            end
+            VU:CaptureController()
+            VU:ClickButton2(Vector2.new())
         end)
     end
 end)
 
+-- ============================================================
+-- GLOBAL API
+-- ============================================================
+_G.HanamiV3 = {
+    State = S,
+    SelectPage = SelectPage,
+    Target = Target,
+    Open = OpenMenu,
+    Close = CloseMenu,
+    Toggle = function() if S.open then CloseMenu() else OpenMenu() end end,
+    Toast = Toast,
+    SaveConfig = SaveConfig,
+    LoadConfig = LoadConfig,
+    SaveFriends = SaveFriends,
+    RefreshMobileBtn = RefreshMobileBtn,
+    Panic = FirePanic,
+}
+
+-- ============================================================
+-- INIT
+-- ============================================================
+SelectPage("Home")
+ApplyTheme("Hanami")
+RefreshMobileBtn()
+RefreshAimStates()
+PositionTargetHud()
+
 Main.Size = UDim2.fromOffset(0,0)
 Tw(Main,{Size=UDim2.fromOffset(W,H)},.3)
-Toast("Hanami v4.0 loaded — "..tostring(S.binds.keyMenu and S.binds.keyMenu.Name or "—").." to toggle", C.green)
+Toast("Hanami v3.2.1 loaded — "..S.keyMenu.Name.." to toggle", C.green)
 
 _G.__HanamiCleanup = function()
     pcall(UntrackAll)
@@ -2680,7 +2228,7 @@ _G.__HanamiCleanup = function()
     pcall(function() if Screen then Screen:Destroy() end end)
 end
 
-Trace("build complete")
+Trace("stage 8/8 build complete")
 
 end)
 
